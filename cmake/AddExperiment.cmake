@@ -1,0 +1,27 @@
+function(add_experiment id)
+  if(EXP_FILTER AND NOT id MATCHES "${EXP_FILTER}")
+    return()
+  endif()
+  cmake_parse_arguments(ARG "" "" "BASELINE_FLAGS;OPTIMIZED_FLAGS" ${ARGN})
+  string(REPLACE "." "_" slug "${id}")
+  foreach(variant baseline optimized)
+    set(target "${slug}_${variant}")
+    add_executable(${target} "${CMAKE_SOURCE_DIR}/exp/${id}/${variant}.cpp")
+    target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/exp/${id}/setup.hpp")
+    target_link_libraries(${target} PRIVATE perfbench)
+    if(variant STREQUAL "baseline" AND ARG_BASELINE_FLAGS)
+      target_compile_options(${target} PRIVATE ${ARG_BASELINE_FLAGS})
+    elseif(variant STREQUAL "optimized" AND ARG_OPTIMIZED_FLAGS)
+      target_compile_options(${target} PRIVATE ${ARG_OPTIMIZED_FLAGS})
+    endif()
+    add_test(NAME ${slug}_${variant} COMMAND ${target} --verify)
+    set_tests_properties(${slug}_${variant} PROPERTIES SKIP_RETURN_CODE 2)
+  endforeach()
+  add_test(NAME ${slug}_equivalence
+           COMMAND ${Python3_EXECUTABLE}
+                   "${CMAKE_SOURCE_DIR}/scripts/verify_exp.py"
+                   "$<TARGET_FILE:${slug}_baseline>"
+                   "$<TARGET_FILE:${slug}_optimized>")
+  set_tests_properties(${slug}_equivalence PROPERTIES SKIP_RETURN_CODE 2)
+  file(APPEND "${CMAKE_BINARY_DIR}/exp_index.txt" "${id}\n")
+endfunction()
