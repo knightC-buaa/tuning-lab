@@ -77,11 +77,12 @@ perf-opt-overview/
 ├── 性能优化概述.md              # 需求来源，不改动
 ├── plan.md                      # 本文件
 ├── CMakeLists.txt               # 顶层：C++23、perfbench 库、子目录
-├── CMakePresets.json            # debug / release 预设
+├── CMakePresets.json            # release 预设
+├── .clangd                      # 指向 build/compile_commands.json
 ├── README.md                    # 构建、运行、结果解读、不可测项
 ├── .gitignore                   # build/、results/
 ├── common/
-│   ├── bench.hpp                # Config/Result/Stats、parse_args、run、BENCH_MAIN
+│   ├── bench.hpp                # Config/Result/接口声明、BENCH_MAIN
 │   ├── bench.cpp                # 计时、warmup、JSON 输出、getrusage
 │   ├── cpu.hpp / cpu.cpp        # physical_cores、pin_current_thread、current_cpu
 │   └── black_box.hpp            # keep()、clobber()
@@ -116,133 +117,31 @@ perf-opt-overview/
 
 ## 核心接口（所有实验共用）
 
-这些接口在 Task 1 实现，后续任务只消费、不修改。修改接口必须回头更新所有已实现实验。
+实现以仓库文件为准；本节只记录契约，不复制代码正文。修改接口时必须同步所有已实现实验。
 
-### `common/bench.hpp`
-
-```cpp
-#pragma once
-#include <cstdint>
-#include <stdexcept>
-#include <string>
-#include <vector>
-
-namespace bench {
-
-struct Config {
-  int reps = 5;        // 外层重复次数
-  long inner = 1;      // 每次重复内 body() 的调用次数
-  int cpu = -1;        // -1 不绑核；>=0 绑到该逻辑 CPU
-  int warmup = 2;
-  bool verify = false; // 只跑一次 body()，输出 checksum 后退出
-};
-
-struct Result {
-  std::string exp;
-  std::string variant;
-  int reps = 0;
-  long inner = 0;
-  std::vector<double> samples_ns;  // 每次重复的「单次 body 耗时」
-  double median_ns = 0, min_ns = 0, p90_ns = 0;
-  double sys_ns = 0;               // 每次重复的平均系统态时间
-  uint64_t checksum = 0;
-  int cpu = -1;
-  std::string governor;
-  std::string ts;
-  std::string semantics;           // 该实验有意保留的语义差异说明
-  bool verify = false;
-  std::string skip;                // 非空表示环境不满足
-};
-
-struct Skip : std::runtime_error { using std::runtime_error::runtime_error; };
-
-Config parse_args(int argc, char** argv);
-double median(std::vector<double> xs);
-double percentile(std::vector<double> xs, double p);
-std::string to_json(const Result& r);
-
-using Body = uint64_t (*)();
-using Init = void (*)();
-
-// 返回 0 成功，1 参数/校验错误，2 SKIP
-int run(const std::string& exp_id, const std::string& variant,
-        const Config& cfg, Body body, long default_inner, Init init,
-        const char* semantics);
-
-} // namespace bench
-
-#define BENCH_MAIN(EXP_ID, VARIANT, INNER)                              \
-  int main(int argc, char** argv) {                                     \
-    auto cfg = bench::parse_args(argc, argv);                           \
-    return bench::run(EXP_ID, VARIANT, cfg, body, INNER, init, kSemantics); \
-  }
-```
+| 接口 | 位置 | 契约 |
+|---|---|---|
+| `bench::Config` | `common/bench.hpp` | `reps`、`inner`、`inner_set`、`cpu`、`warmup`、`verify`。 |
+| `bench::Result` | `common/bench.hpp` | 实验 id、variant、reps/inner、samples_ns、median/min/p90、sys_ns、checksum、cpu、governor、ts、semantics、verify、skip。 |
+| `bench::Skip` | `common/bench.hpp` | 环境不满足时抛出；`run` 捕获后输出 skip JSON 并返回 2。 |
+| `bench::parse_args` | `common/bench.hpp/.cpp` | 解析 `--reps`、`--inner`、`--cpu`、`--warmup`、`--verify`；非法值打印错误并退出 1。 |
+| `bench::run` | `common/bench.hpp/.cpp` | `run(exp, variant, cfg, body, default_inner, init, semantics)`；返回 0 成功、1 参数/校验错误、2 SKIP；正常路径计时并输出一行 JSONL。 |
+| `BENCH_MAIN` | `common/bench.hpp` | 生成 `main()`；依赖每个实验定义的 `init()`、`body()`、`kSemantics`。 |
+| `bench::median` / `percentile` | `common/bench.hpp/.cpp` | 排序后取中位数；percentile 用最近秩法。 |
+| `bench::to_json` | `common/bench.hpp/.cpp` | 手工拼装 JSONL；checksum 以 `0x` 开头；`verify` / `skip` 按需出现。 |
+| `bench::physical_cores` | `common/cpu.hpp/.cpp` | 从 `thread_siblings_list` 每对兄弟取一个，升序；读不到 sysfs 时退化。 |
+| `bench::pin_current_thread` | `common/cpu.hpp/.cpp` | `sched_setaffinity`，成功返回 true。 |
+| `bench::current_cpu` | `common/cpu.hpp/.cpp` | `sched_getcpu()`。 |
+| `bench::keep` / `clobber` | `common/black_box.hpp` | 防止编译器消除被测计算。 |
+| `add_experiment(id)` | `cmake/AddExperiment.cmake` | 生成 `<slug>_baseline` / `<slug>_optimized`，注册 `--verify` 与等价性测试，追加 `exp_index.txt`；支持 `BASELINE_FLAGS`、`OPTIMIZED_FLAGS`、`EXP_FILTER`。 |
 
 约定：
 
-- 每个实验的 `setup.hpp` 用 `inline` 变量存放共享数据，提供 `inline void init_base()`，并定义 `constexpr const char* kSemantics = "...";`（没有语义差异时写 `""`）。
+- 每个实验的 `setup.hpp` 用 `inline` 变量存放共享数据，提供 `inline void init_base()`，并定义 `constexpr const char* kSemantics = "..."`（没有语义差异时写 `""`）。
 - 每个 `baseline.cpp` / `optimized.cpp` 各自定义 `void init()`（内部先调用 `init_base()`，需要时再做本变体的准备），并定义 `uint64_t body()`，末尾调用 `BENCH_MAIN("<id>", "<variant>", <default_inner>)`。
 - `body()` 只能读取 `init()` 建好的数据，不得在计时区内做数据初始化。
 - baseline 与 optimized 的 checksum 必须相同；等价性由 `scripts/verify_exp.py` 在 CTest 中比较，不另设独立 oracle。
-
-### `common/cpu.hpp`
-
-```cpp
-#pragma once
-#include <vector>
-
-namespace bench {
-std::vector<int> physical_cores();   // 每个物理核取一个逻辑 CPU，按序号升序
-bool pin_current_thread(int cpu);    // sched_setaffinity
-int  current_cpu();                  // sched_getcpu
-}
-```
-
-`physical_cores()` 读取 `/sys/devices/system/cpu/cpu*/topology/thread_siblings_list`，每对兄弟只保留一个。本机应返回 `{0,2,4,6,8,10}`。
-
-### `common/black_box.hpp`
-
-```cpp
-#pragma once
-namespace bench {
-template <class T> inline void keep(const T& v) {
-  asm volatile("" : : "r,m"(v) : "memory");
-}
-inline void clobber() { asm volatile("" ::: "memory"); }
-}
-```
-
-### `cmake/AddExperiment.cmake`
-
-```cmake
-function(add_experiment id)
-  if(EXP_FILTER AND NOT id MATCHES "${EXP_FILTER}")
-    return()
-  endif()
-  cmake_parse_arguments(ARG "" "" "BASELINE_FLAGS;OPTIMIZED_FLAGS" ${ARGN})
-  string(REPLACE "." "_" slug "${id}")
-  foreach(variant baseline optimized)
-    set(target "${slug}_${variant}")
-    add_executable(${target} "${CMAKE_SOURCE_DIR}/exp/${id}/${variant}.cpp")
-    target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/exp/${id}/setup.hpp")
-    target_link_libraries(${target} PRIVATE perfbench)
-    if(variant STREQUAL "baseline" AND ARG_BASELINE_FLAGS)
-      target_compile_options(${target} PRIVATE ${ARG_BASELINE_FLAGS})
-    elseif(variant STREQUAL "optimized" AND ARG_OPTIMIZED_FLAGS)
-      target_compile_options(${target} PRIVATE ${ARG_OPTIMIZED_FLAGS})
-    endif()
-    add_test(NAME ${slug}_${variant} COMMAND ${target} --verify)
-    set_tests_properties(${slug}_${variant} PROPERTIES SKIP_RETURN_CODE 2)
-  endforeach()
-  add_test(NAME ${slug}_equivalence
-           COMMAND ${Python3_EXECUTABLE}
-                   "${CMAKE_SOURCE_DIR}/scripts/verify_exp.py"
-                   "$<TARGET_FILE:${slug}_baseline>"
-                   "$<TARGET_FILE:${slug}_optimized>")
-  set_tests_properties(${slug}_equivalence PROPERTIES SKIP_RETURN_CODE 2)
-  file(APPEND "${CMAKE_BINARY_DIR}/exp_index.txt" "${id}\n")
-endfunction()
-```
+- `physical_cores()` 本机应返回 `{0,2,4,6,8,10}`。
 
 ### 构建与运行约定
 
@@ -254,103 +153,20 @@ endfunction()
 
 ---
 
-## Task 1: 仓库骨架与计时框架
+## Task 1: 仓库骨架与计时框架（已完成）
 
-**Files:**
-- Create: `CMakeLists.txt`, `CMakePresets.json`, `.gitignore`
-- Create: `exp/CMakeLists.txt`（先留空，Task 3 起逐行加入实验）
-- Create: `common/bench.hpp`, `common/bench.cpp`, `common/cpu.hpp`, `common/cpu.cpp`, `common/black_box.hpp`
-- Create: `cmake/AddExperiment.cmake`
-- Create: `tests/CMakeLists.txt`, `tests/test_util.hpp`, `tests/test_bench.cpp`, `tests/test_pinning.cpp`
+**状态：** 已完成（2026-11-24，commit `2be2efc`）。实现以仓库文件为准，本节不再复述源码：
 
-**Interfaces:**
-- Consumes: 无。
-- Produces: 本文件「核心接口」一节的 `bench::Config`、`bench::Result`、`bench::parse_args`、`bench::run`、`bench::BENCH_MAIN`、`bench::physical_cores`、`bench::pin_current_thread`、`bench::current_cpu`、`bench::keep`、`add_experiment()`。
+- 构建：`CMakeLists.txt`、`CMakePresets.json`、`.clangd`
+- 计时与绑核：`common/bench.hpp`、`common/bench.cpp`、`common/cpu.hpp`、`common/cpu.cpp`、`common/black_box.hpp`
+- 构建宏：`cmake/AddExperiment.cmake`
+- 测试：`tests/CMakeLists.txt`、`tests/test_util.hpp`、`tests/test_bench.cpp`、`tests/test_pinning.cpp`
 
-- [ ] **Step 1: 初始化仓库与骨架**
+**契约：** 见「核心接口」表。
 
-```bash
-cd /home/archer/code/idea/perf-opt-overview
-git init   # 当前目录及其父目录都不是 git 仓库
-```
+**验证：** `ctest --test-dir build --output-on-failure -R 'bench_unit|pinning'` → 2/2 PASS；`physical_cores()` 返回 `{0,2,4,6,8,10}`。
 
-写 `.gitignore`：`build/`、`results/*`、`!results/.gitkeep`、`*.o`、`__pycache__/`。
-
-写 `CMakeLists.txt`：`cmake_minimum_required(VERSION 3.25)`、`project(perf_opt_overview LANGUAGES CXX)`、`CMAKE_CXX_STANDARD 23`、`CMAKE_CXX_STANDARD_REQUIRED ON`、`CMAKE_CXX_EXTENSIONS OFF`、`find_package(Python3 COMPONENTS Interpreter REQUIRED)`、`find_package(Threads REQUIRED)`、`add_compile_options(-O2 -g -Wall -Wextra)`、`add_library(perfbench STATIC common/bench.cpp common/cpu.cpp)`、`target_include_directories(perfbench PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})`、`target_link_libraries(perfbench PUBLIC Threads::Threads)`、`enable_testing()`、`include(cmake/AddExperiment.cmake)`、`add_subdirectory(exp)`、`add_subdirectory(tests)`。
-
-`exp/CMakeLists.txt` 先只写一行注释，确保 `add_subdirectory(exp)` 能配置通过。
-
-- [ ] **Step 2: 先写失败的单元测试**
-
-`tests/test_util.hpp` 提供：
-
-```cpp
-#define CHECK(cond) do { if (!(cond)) { \
-  std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-  std::exit(1); } } while (0)
-```
-
-`tests/test_bench.cpp` 断言：
-
-- `bench::median({1,2,3,4,5}) == 3.0`
-- `bench::median({4,1,3,2}) == 2.5`
-- `bench::percentile({1,2,3,4,5,6,7,8,9,10}, 0.9) == 9.0`（最近秩法）
-- `bench::to_json(Result{...})` 包含 `"exp"`、`"median_ns"`、`"checksum"`、`"semantics"`，且 `checksum` 以 `"0x"` 开头
-- 一个 `skip` 非空的 `Result` 序列化后包含 `"skip"`
-- `bench::parse_args` 对 `--reps 0` 返回前打印错误并退出 1（用子进程或 `EXPECT_EXIT` 风格 fork 测试）
-
-写 `tests/CMakeLists.txt`：两个 `add_executable` 链接 `perfbench`，并用 `add_test(NAME bench_unit ...)`、`add_test(NAME pinning ...)` 注册。
-
-`tests/test_pinning.cpp` 断言：
-
-- `physical_cores()` 非空，且每个值都在 `/sys/devices/system/cpu/online` 范围内
-- 本机 `physical_cores().size() == 6`；若不为 6，打印实际值并返回 0（允许换机器）
-- `pin_current_thread(physical_cores().front())` 返回 true，随后 `current_cpu()` 等于该值
-
-- [ ] **Step 3: 运行测试，确认失败**
-
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j"$(nproc)"
-```
-
-Expected: 编译失败，提示 `bench.hpp` 不存在或符号未定义。
-
-- [ ] **Step 4: 实现 `common/bench` 与 `common/cpu`**
-
-`bench.cpp` 要点：
-
-- `parse_args` 支持 `--reps`、`--inner`、`--cpu`、`--warmup`、`--verify`，未知参数打印用法并退出 1。
-- `run` 先调用 `init()`；捕获 `bench::Skip` 后输出 `{"exp":...,"variant":...,"skip":"..."}` 并返回 2。
-- `--verify`：调用一次 `body()`，输出 `{"exp":...,"variant":...,"verify":true,"checksum":"0x..."}`，返回 0。
-- 正常路径：`cfg.cpu >= 0` 时绑核；warmup 若干次；每次重复用 `steady_clock` 计时 `inner` 次 `body()`，记录 `elapsed/inner`，并用 `getrusage(RUSAGE_SELF)` 记录系统态时间差；checksum 取最后一次 `body()` 的返回值，同时校验所有重复的 checksum 相同，不同则返回 1。
-- `semantics` 参数原样写入 `Result.semantics`，最终进入 JSON。
-- 如果用户没有显式传 `--inner`，使用 `default_inner`。
-- JSON 手工拼装；`samples_ns` 用 `std::setprecision(17)` 输出。
-- `governor` 读 `/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor`，读不到写 `"unknown"`。
-- `ts` 用 `std::chrono::system_clock` + `std::put_time("%Y-%m-%dT%H:%M:%S")`。
-
-`cpu.cpp` 要点：
-
-- `physical_cores()` 扫描 `/sys/devices/system/cpu/cpu[0-9]*/topology/thread_siblings_list`，对每个 `N-M` 取第一个数；用 `std::set` 去重排序。读不到 sysfs 时退化为 `/sys/devices/system/cpu/online` 的全部逻辑 CPU。
-- `pin_current_thread` 用 `CPU_ZERO` / `CPU_SET` / `sched_setaffinity(0, ...)`。
-- `current_cpu` 用 `sched_getcpu()`。
-
-- [ ] **Step 5: 运行测试，确认通过**
-
-```bash
-cmake --build build -j"$(nproc)"
-ctest --test-dir build --output-on-failure -R 'bench_unit|pinning'
-```
-
-Expected: 2 个测试 PASS。
-
-- [ ] **Step 6: 提交**
-
-```bash
-git add 性能优化概述.md plan.md CMakeLists.txt CMakePresets.json .gitignore exp common cmake tests
-git commit -m "feat: 建立统一计时框架与构建骨架"
-```
+**Rulings：** 见 `.superpowers/sdd/plan/progress.md`（`Config::inner_set`、`exp_index.txt` 截断、额外测试覆盖、`compile_commands`）。
 
 ---
 
@@ -412,40 +228,12 @@ Expected: FAIL，`scripts/report.py` 与 `scripts/verify_exp.py` 不存在。
 
 - [ ] **Step 5: 实现 `scripts/run_all.sh` 与 `scripts/check_env.sh`**
 
-`run_all.sh`：
+`run_all.sh` 的行为（实现见 `scripts/run_all.sh`）：
 
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-ulimit -n 65536 2>/dev/null || true
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j"$(nproc)"
-ctest --test-dir build --output-on-failure
-stamp="$(date +%Y%m%d-%H%M%S)"
-out="results/$stamp"
-mkdir -p "$out"
-mapfile -t exps < <(grep -v '^[[:space:]]*$' build/exp_index.txt)
-for round in $(seq 1 "${RUNS:-3}"); do
-  if (( round % 2 == 1 )); then order=(baseline optimized); else order=(optimized baseline); fi
-  for exp in "${exps[@]}"; do
-    slug="${exp//./_}"
-    for v in "${order[@]}"; do
-      set +e
-      "./build/exp/${slug}_${v}" --reps 5 --cpu 2 >> "$out/raw.jsonl"
-      rc=$?
-      set -e
-      if (( rc == 2 )); then
-        : # 二进制自己已经输出带原因的 skip JSON
-      elif (( rc != 0 )); then
-        echo "实验 $exp/$v 失败（退出码 $rc）" >&2
-        exit 1
-      fi
-    done
-  done
-done
-python3 scripts/report.py "$out/raw.jsonl" > "$out/summary.md"
-echo "结果: $out/summary.md"
-```
+- 提升 fd 上限；配置并构建 Release；先跑 CTest 作为正确性闸门。
+- 读取 `build/exp_index.txt`，做 `RUNS` 轮（默认 3）；每轮反转 baseline/optimized 顺序，抵消频率漂移。
+- 每次运行 `--reps 5 --cpu 2`，把 JSONL 追加到 `results/<timestamp>/raw.jsonl`；退出码 2 视为 SKIP，其他非零立即失败。
+- 按 Task 2B 的开关采集 `perf.jsonl`，最后调用 `report.py` 生成 `summary.md`。
 
 `check_env.sh` 只打印不修改：CPU 型号、物理核、governor、`perf_event_paranoid`、THP、可用内存、`ulimit -n`、`liburing.h` 是否存在。若 governor 不是 `performance`，提示用户可手动执行 `sudo cpupower frequency-set -g performance`，脚本本身不调用 sudo。
 
@@ -518,27 +306,12 @@ Expected: FAIL，`scripts/perf_check.sh` 不存在或 `report.py` 不认 `--perf
 
 - 顶部 `set -u`，不要用 `set -e`，因为 perf 失败是预期分支。
 - `probe`：`"${PERF_BIN:-perf}" stat -e cycles -- true >/dev/null 2>&1`，用退出码判断。
-- 采集：把 perf 统计写到临时文件，避免污染被测程序的 stdout：
-
-```bash
-tmp="$(mktemp)"
-"${PERF_BIN:-perf}" stat -x, -o "$tmp" \
-  -e cycles,instructions,cache-misses,branch-misses,context-switches \
-  -- "$bin" --reps 1 --warmup 0 --cpu 2 >/dev/null 2>/dev/null
-```
-
+- 采集：运行 `perf stat -x, -o <tmp> -e cycles,instructions,cache-misses,branch-misses,context-switches -- <bin> --reps 1 --warmup 0 --cpu 2`，统计写入临时文件，被测程序的 stdout/stderr 丢弃，避免污染。
 - 用 `awk -F,` 解析 `value,unit,event,...` 的第三列；缺失字段输出 `null`。
 - 若完整事件集失败（例如 `context-switches` 不受支持），退化为 `cycles,instructions,cache-misses,branch-misses` 再试一次；仍失败才标记不可用。
 - 不可用时输出 `{"exp":"...","variant":"...","perf_available":false,"reason":"..."}` 并退出 0，**不要**让 `run_all.sh` 失败。
 - `bin` 默认 `build/exp/<slug>_<variant>`，允许 `EXP_BIN` 覆盖（供测试使用）。
-- 3.4.1 额外执行：
-
-```bash
-"${PERF_BIN:-perf}" c2c record -o "$tmpdata" -- "$bin" --reps 1 --warmup 0 --cpu 2 >/dev/null 2>/dev/null
-"${PERF_BIN:-perf}" c2c report -i "$tmpdata" --stats 2>/dev/null
-```
-
-解析包含 `HITM` 的行的第一个整数；失败则写 `"c2c_available":false`。任何情况下都清理临时文件。
+- 3.4.1 额外执行 `perf c2c record -o <tmpdata> -- <bin> ...` 与 `perf c2c report -i <tmpdata> --stats`；解析包含 `HITM` 的行的第一个整数，失败则写 `"c2c_available":false`。任何情况下都清理临时文件。
 
 - [ ] **Step 4: 扩展 `scripts/report.py`**
 
@@ -551,31 +324,13 @@ tmp="$(mktemp)"
 
 - [ ] **Step 5: 扩展 `scripts/run_all.sh` 与 `scripts/check_env.sh`**
 
-`run_all.sh` 在主循环之后：
+`run_all.sh` 在主循环之后增加 perf 采集：
 
-```bash
-perf_out="$out/perf.jsonl"
-if [[ "${PERF:-auto}" != "0" ]]; then
-  if scripts/perf_check.sh probe; then
-    for exp in "${exps[@]}"; do
-      for v in baseline optimized; do
-        scripts/perf_check.sh "$exp" "$v" >> "$perf_out" || true
-      done
-    done
-  else
-    printf '{"perf_available":false,"reason":"perf stat 不可用"}\n' > "$perf_out"
-  fi
-fi
-args=("$out/raw.jsonl")
-[[ -s "$perf_out" ]] && args+=(--perf "$perf_out")
-python3 scripts/report.py "${args[@]}" > "$out/summary.md"
-```
+- 开关为 `PERF=auto`（默认）或 `PERF=0`；auto 时先 `perf_check.sh probe`。
+- 可用时逐实验、逐 variant 追加到 `results/<timestamp>/perf.jsonl`；不可用时写一行全局 `{"perf_available":false,...}`。
+- 若 `perf.jsonl` 非空，以 `--perf <path>` 传给 `report.py`。
 
-`check_env.sh` 增加一行：「perf stat：可用 / 不可用」，不可用时打印：
-
-```bash
-sudo sysctl kernel.perf_event_paranoid=2   # 临时启用，重启失效
-```
+`check_env.sh` 增加一行「perf stat：可用 / 不可用」；不可用时提示用户可手动执行 `sudo sysctl kernel.perf_event_paranoid=2`（临时启用，重启失效）。脚本本身不调用 sudo。
 
 - [ ] **Step 6: 运行测试，确认通过**
 
@@ -624,9 +379,7 @@ git commit -m "feat: 可选 perf 佐证层"
 
 - [ ] **Step 2: 注册实验并构建**
 
-```cmake
-add_experiment(2.1.1_hash_vs_scan)
-```
+在 `exp/CMakeLists.txt` 加入实验 `2.1.1_hash_vs_scan`；无额外编译选项。
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -730,15 +483,17 @@ git commit -m "feat: 试点实验 2.1.1 哈希 vs 线性扫描"
 
 ### 注册
 
-```cmake
-add_experiment(2.1.2_pruning BASELINE_FLAGS -fno-tree-vectorize OPTIMIZED_FLAGS -fno-tree-vectorize)
-add_experiment(2.2.1_ilp)
-add_experiment(2.2.2_branch_prediction BASELINE_FLAGS -fno-if-conversion -fno-if-conversion2)
-add_experiment(2.2.3_loop_fusion)
-add_experiment(2.2.4_simd_avx2 BASELINE_FLAGS -fno-tree-vectorize OPTIMIZED_FLAGS -mavx2 -mfma)
-add_experiment(2.3.1_compiler_opt BASELINE_FLAGS -O0 OPTIMIZED_FLAGS -O2)
-add_experiment(2.3.2_runtime_dispatch BASELINE_FLAGS -fno-devirtualize)
-```
+在 `exp/CMakeLists.txt` 注册下列实验；该文件是实验清单的唯一来源。额外编译选项：
+
+| 实验 | baseline | optimized |
+|---|---|---|
+| `2.1.2_pruning` | `-fno-tree-vectorize` | `-fno-tree-vectorize` |
+| `2.2.1_ilp` | — | — |
+| `2.2.2_branch_prediction` | `-fno-if-conversion -fno-if-conversion2` | — |
+| `2.2.3_loop_fusion` | — | — |
+| `2.2.4_simd_avx2` | `-fno-tree-vectorize` | `-mavx2 -mfma` |
+| `2.3.1_compiler_opt` | `-O0` | `-O2` |
+| `2.3.2_runtime_dispatch` | `-fno-devirtualize` | — |
 
 - [ ] **Step 1: 按上述规格创建 7 个实验目录**
 - [ ] **Step 2: 在 `exp/CMakeLists.txt` 注册**
@@ -821,12 +576,7 @@ git commit -m "feat: 计算效率 7 组对比实验"
 
 ### 注册
 
-```cmake
-add_experiment(3.1.1_temporal_locality BASELINE_FLAGS -fno-tree-vectorize OPTIMIZED_FLAGS -fno-tree-vectorize)
-add_experiment(3.1.2_spatial_locality BASELINE_FLAGS -fno-tree-vectorize OPTIMIZED_FLAGS -fno-tree-vectorize)
-add_experiment(3.2.1_aos_vs_soa BASELINE_FLAGS -fno-tree-vectorize OPTIMIZED_FLAGS -fno-tree-vectorize)
-add_experiment(3.2.2_hot_cold_split BASELINE_FLAGS -fno-tree-vectorize OPTIMIZED_FLAGS -fno-tree-vectorize)
-```
+在 `exp/CMakeLists.txt` 注册 `3.1.1_temporal_locality`、`3.1.2_spatial_locality`、`3.2.1_aos_vs_soa`、`3.2.2_hot_cold_split`；四个实验的 baseline 与 optimized 都加 `-fno-tree-vectorize`。
 
 - [ ] **Step 1: 按规格创建 4 个实验目录**
 - [ ] **Step 2: 注册、构建、跑 CTest**
@@ -896,13 +646,7 @@ git commit -am "feat: 存储层次 A 组 4 个对比实验"
 
 ### 注册
 
-```cmake
-add_experiment(3.3.1_cache_blocking)
-add_experiment(3.3.2_working_set)
-add_experiment(3.4.1_false_sharing)
-add_experiment(3.4.2_true_sharing)
-add_experiment(3.5.1_allocator)
-```
+在 `exp/CMakeLists.txt` 注册 `3.3.1_cache_blocking`、`3.3.2_working_set`、`3.4.1_false_sharing`、`3.4.2_true_sharing`、`3.5.1_allocator`；均无额外编译选项。
 
 - [ ] **Step 1: 按规格创建 5 个实验目录**
 - [ ] **Step 2: 注册、构建、跑 CTest**
@@ -972,13 +716,7 @@ git commit -am "feat: 存储层次 B 组 5 个对比实验"
 
 ### 注册
 
-```cmake
-add_experiment(4.1.1_async_wait)
-add_experiment(4.1.2_epoll_vs_poll)
-add_experiment(4.2.1_zero_copy)
-add_experiment(4.2.2_batching)
-add_experiment(4.3.1_syscall_overhead)
-```
+在 `exp/CMakeLists.txt` 注册 `4.1.1_async_wait`、`4.1.2_epoll_vs_poll`、`4.2.1_zero_copy`、`4.2.2_batching`、`4.3.1_syscall_overhead`；均无额外编译选项。
 
 - [ ] **Step 1: 按规格创建 5 个实验目录**
 - [ ] **Step 2: 注册、构建、跑 CTest**
@@ -1083,12 +821,7 @@ git commit -am "feat: io_uring 批量提交对比实验（条件启用）"
 
 ### 注册
 
-```cmake
-add_experiment(5.1.1_thread_local)
-add_experiment(5.1.2_sharding)
-add_experiment(5.2.1_lock_granularity)
-add_experiment(5.2.2_read_copy)
-```
+在 `exp/CMakeLists.txt` 注册 `5.1.1_thread_local`、`5.1.2_sharding`、`5.2.1_lock_granularity`、`5.2.2_read_copy`；均无额外编译选项。
 
 - [ ] **Step 1: 按规格创建 4 个实验目录**
 - [ ] **Step 2: 注册、构建、跑 CTest**
@@ -1138,12 +871,7 @@ git commit -am "feat: 并发与协调 A 组 4 个对比实验"
 
 ### 注册
 
-```cmake
-add_experiment(5.3.1_lockfree_spsc)
-add_experiment(5.3.2_lockfree_mpmc)
-add_experiment(5.4.1_batch_coordination)
-add_experiment(5.4.2_barrier_reduction)
-```
+在 `exp/CMakeLists.txt` 注册 `5.3.1_lockfree_spsc`、`5.3.2_lockfree_mpmc`、`5.4.1_batch_coordination`、`5.4.2_barrier_reduction`；均无额外编译选项。
 
 - [ ] **Step 1: 按规格创建 4 个实验目录**
 - [ ] **Step 2: 注册、构建、跑 CTest**
@@ -1182,10 +910,7 @@ git commit -am "feat: 并发与协调 B 组 4 个对比实验"
 
 ### 注册
 
-```cmake
-add_experiment(6.1.1_round_trips)
-add_experiment(6.1.2_protocol)
-```
+在 `exp/CMakeLists.txt` 注册 `6.1.1_round_trips`、`6.1.2_protocol`；均无额外编译选项。
 
 - [ ] **Step 1: 按规格创建 2 个实验目录**
 - [ ] **Step 2: 注册、构建、跑 CTest**
@@ -1234,11 +959,7 @@ git commit -am "feat: 网络往返与协议 2 个对比实验"
 
 ### 注册
 
-```cmake
-add_experiment(6.3.1_data_locality_wire)
-add_experiment(6.4.1_sharded_coordination)
-add_experiment(6.4.2_async_replication)
-```
+在 `exp/CMakeLists.txt` 注册 `6.3.1_data_locality_wire`、`6.4.1_sharded_coordination`、`6.4.2_async_replication`；均无额外编译选项。
 
 - [ ] **Step 1: 按规格创建 3 个实验目录**
 - [ ] **Step 2: 注册、构建、跑 CTest**
