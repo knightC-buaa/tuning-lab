@@ -20,9 +20,9 @@
 - `scripts/perf_check.sh` 只检测和采集，不调用 sudo、不修改 `kernel.perf_event_paranoid` 或 governor。本机默认 `perf_event_paranoid=4`；用户可自行执行 `sudo sysctl kernel.perf_event_paranoid=2` 启用，是否启用由用户决定。
 - 所有 checksum 用整数运算；禁止浮点累加进入 checksum。不同求和顺序必须得到相同结果，因此矩阵乘等实验使用整数矩阵。
 - 每个实验必须能在 `--verify` 下独立退出 0。环境不满足时抛 `bench::Skip`，退出码 2，CTest 记为 SKIP。
-- 线程数 ≤ 6，只使用物理核 `{0,2,4,6,8,10}`，不得使用超线程兄弟核。
+- 线程数 ≤ 6，只使用物理核 `{0,2,4,6,8,10}`，不得使用超线程兄弟核。例外：4.1.1b 的 baseline 以并发任务数为自变量，故意使用 N 个线程；该实验不受线程数上限约束，但不得据此声称多核并行收益。
 - 单实验常驻内存 ≤ 1.2 GB（3.3.2 为 1 GB，其余更小）。
-- 单次重复 100–500 ms；必要时用 `--inner` 放大。全套 3 轮必须在 15 分钟内跑完。
+- 单次重复 100–500 ms；必要时用 `--inner` 放大。全套 3 轮必须在 15 分钟内跑完。4.1 的每个实验规格必须写明 baseline 与 optimized 的 `default_inner`（`run_all.sh` 不会传 `--inner`）。
 - 负收益、无差异、噪声过大都必须如实进入报告。除修正实现错误外，不得通过反复调参制造正收益。
 - 无第三方依赖。4.3.2 是唯一例外，见 Task 8 的依赖闸门。
 - 需要真实磁盘行为的实验（4.2.1、4.3.2、6.4.2）把文件放在 `$HOME/.cache/perf-opt-overview/`（本机为 ext4/NVMe），**不得放 `/tmp`**：本机 `/tmp` 是 tmpfs，`fsync` 几乎免费，会把结论做反。其他临时文件用 `std::filesystem::temp_directory_path()/<exp_id>-<pid>/`，实验结束清理。
@@ -30,11 +30,13 @@
 
 ## Review Focus
 
-- **编译器消除被测循环**：每个 `body()` 的返回值必须参与 checksum，关键中间值经 `bench::keep()`。风险最高的实验是 2.2.1、2.2.2、2.2.3、2.3.2、3.4.2。
+- **编译器消除被测循环**：每个 `body()` 的返回值必须参与 checksum，关键中间值经 `bench::keep()`。风险最高的实验是 2.2.1、2.2.2、2.2.3、2.3.2、3.4.2、4.1.2b。
 - **频率漂移造成假差异**：本机 governor 是 `powersave`。`run_all.sh` 每轮反转 A/B 顺序，报告用中位数与 IQR，区间重叠即标 INCONCLUSIVE。
-- **有意的语义差异被误读为等价**：4.3.1 缓存 pid、5.2.2 各版本内容相同、6.4.2 异步 ack。每个实验的 `setup.hpp` 用 `kSemantics` 写明，报告原样输出。
-- **资源超限**：3.3.2 申请 1 GB，4.1.2 创建 10k socketpair。`init()` 必须检查可用内存与 fd 上限，不满足则 SKIP 而不是崩溃。
-- **多线程实验用错核**：机器是 6 物理核 + 超线程。`bench::physical_cores()` 每对兄弟只取一个，线程数上限 6。
+- **有意的语义差异被误读为等价**：4.1.1a 的 1 ms 模拟延迟、4.1.1b 的线程数自变量、4.1.2a 的「1 条活跃 + 9,999 条空闲」建模、4.1.2b 的吞吐而非尾延迟、4.3.1 缓存 pid、5.2.2 各版本内容相同、6.4.2 异步 ack。每个实验的 `setup.hpp` 用 `kSemantics` 写明，报告原样输出。
+- **资源超限**：3.3.2 申请 1 GB，4.1.2a 创建 10k socketpair，4.1.1b 创建 N=4096 个线程。`init()` 必须检查可用内存、fd 上限、`RLIMIT_NPROC` / cgroup `pids.max`，不满足则 SKIP 而不是崩溃。
+- **多线程实验用错核**：机器是 6 物理核 + 超线程。`bench::physical_cores()` 每对兄弟只取一个，线程数上限 6（4.1.1b 例外，见 Global Constraints）。4.1.1a 的服务线程在 `init()` 创建并显式绑到核 4；4.1.2b 的 worker 在 `body()` 创建时必须显式绑核，否则继承主线程的 `--cpu`。
+- **服务端必须在 `init()` 建**：bench 在 `init()` 之后才绑定主线程；若在 `body()` 里建服务线程，它会继承 `--cpu` 的单一核亲和性，4.1.1a 的并发等待会被压到一核。
+- **线程/协程生命周期**：4.1.1a 的服务线程用 stop flag + eventfd + join 的 RAII 收尾，不能让 joinable 线程进入静态析构；4.1.1b 的协程 frame 由事件循环统一 destroy，避免双重销毁；`pthread_create` 部分失败时 join 已建线程再抛 Skip。
 - **perf 佐证缺失或被误用**：主结论只由墙钟与 checksum 决定；perf 列不可用时显示 `N/A`。I/O 与等待型实验不得用 `cycles` 替代墙钟，`task-clock` 也不等于墙钟。
 
 ---
@@ -49,7 +51,7 @@
 | 条件可测 | 1 | 4.3.2 io_uring（缺 `liburing.h`，需最小封装，见 Task 8） |
 | 本机不可测 | 6 | 3.5.2 NUMA（单节点）、4.4.1 单机内核旁路（无设备）、4.4.2 用户态 I/O 路径（无设备）、6.2.1 RDMA（无设备）、6.2.2 内核旁路网络（无设备）、6.3.2 在网计算（无设备） |
 
-不可测的 6 个点在 `README.md` 中单独说明原因，不生成空壳实验。
+不可测的 6 个点在 `README.md` 中单独说明原因，不生成空壳实验。4.1.1 拆为 4.1.1a/4.1.1b，4.1.2 拆为 4.1.2a/4.1.2b（可选）；叶子点数量不变，Task 7 的实验数增加。
 
 ### 全部实验一览
 
@@ -59,7 +61,7 @@
 | Task 4 | 2.1.2、2.2.1、2.2.2、2.2.3、2.2.4、2.3.1、2.3.2 |
 | Task 5 | 3.1.1、3.1.2、3.2.1、3.2.2 |
 | Task 6 | 3.3.1、3.3.2、3.4.1、3.4.2、3.5.1 |
-| Task 7 | 4.1.1、4.1.2、4.2.1、4.2.2、4.3.1 |
+| Task 7 | 4.1.1a、4.1.1b、4.1.2a、4.1.2b（可选）、4.2.1、4.2.2、4.3.1 |
 | Task 8 | 4.3.2（条件） |
 | Task 9 | 5.1.1、5.1.2、5.2.1、5.2.2 |
 | Task 10 | 5.3.1、5.3.2、5.4.1、5.4.2 |
@@ -122,7 +124,7 @@ perf-opt-overview/
 | 接口 | 位置 | 契约 |
 |---|---|---|
 | `bench::Config` | `common/bench.hpp` | `reps`、`inner`、`inner_set`、`cpu`、`warmup`、`verify`。 |
-| `bench::Result` | `common/bench.hpp` | 实验 id、variant、reps/inner、samples_ns、median/min/p90、sys_ns、checksum、cpu、governor、ts、semantics、verify、skip。 |
+| `bench::Result` | `common/bench.hpp` | 实验 id、variant、reps/inner、samples_ns、median/min/p90、sys_ns、checksum、cpu、governor、ts、semantics、verify、skip。注意：`samples_ns` / `median_ns` / `min_ns` / `p90_ns` 为 per-body；`sys_ns` 为 per-rep（累加后除以 reps，**不除以 inner**），不同 `inner` 的 `sys_ns` 不可直接比较。 |
 | `bench::Skip` | `common/bench.hpp` | 环境不满足时抛出；`run` 捕获后输出 skip JSON 并返回 2。 |
 | `bench::parse_args` | `common/bench.hpp/.cpp` | 解析 `--reps`、`--inner`、`--cpu`、`--warmup`、`--verify`；非法值打印错误并退出 1。 |
 | `bench::run` | `common/bench.hpp/.cpp` | `run(exp, variant, cfg, body, default_inner, init, semantics)`；返回 0 成功、1 参数/校验错误、2 SKIP；正常路径计时并输出一行 JSONL。 |
@@ -665,36 +667,78 @@ git commit -am "feat: 存储层次 B 组 5 个对比实验"
 
 ---
 
-## Task 7: I/O 与系统交互（5 个实验）
+## Task 7: I/O 与系统交互（6 个实验 + 1 个可选）
 
 **Files:**
-- Create: `exp/4.1.1_async_wait/*`
-- Create: `exp/4.1.2_epoll_vs_poll/*`
+- Create: `exp/4.1.1a_async_overlap/*`
+- Create: `exp/4.1.1b_coroutine_vs_thread/*`
+- Create: `exp/4.1.2a_epoll_vs_poll/*`
+- Create: `exp/4.1.2b_long_task_offload/*`（可选）
 - Create: `exp/4.2.1_zero_copy/*`
 - Create: `exp/4.2.2_batching/*`
 - Create: `exp/4.3.1_syscall_overhead/*`
 - Modify: `exp/CMakeLists.txt`
 
-### 4.1.1 `4.1.1_async_wait`
-- 服务端：同一进程内建 64 条 UNIX stream 连接，每条由一个独立服务线程处理；每收到 8 字节请求就 `sleep_for(1ms)` 再回 8 字节，这样延迟本身可以重叠。
-- baseline：64 个请求串行发送、等待（总耗时约 64 ms）。
-- optimized：64 个请求同时发出到 64 条连接，再统一收（总耗时约 1–3 ms）。
-- 校验和：64 个响应之和。
-- 预期：30–60x。
-- 注意：`semantics:` 注明 1 ms 是模拟的服务端延迟，本实验测的是等待重叠。
+### 4.1.1a `4.1.1a_async_overlap`
 
-### 4.1.2 `4.1.2_epoll_vs_poll`
-- 建立 10,000 个 `socketpair(AF_UNIX, SOCK_STREAM)`；其中 200 个对端各发 100 条 1 KB 消息（共 20,000 条）。
-- baseline：`poll()` 扫描全部 10,000 个 fd，循环直到收完。
-- optimized：`epoll` 只返回就绪的 fd。
-- 校验和：收到的字节数之和。
-- 预期：10–50x。
-- 注意：`init()` 检查 `RLIMIT_NOFILE`，低于 32768 时 SKIP；创建 socketpair 失败也 SKIP。
+覆盖「用异步 I/O 隐藏等待时间」与「等待期间不占住线程资源」的客户端侧。
+
+- 共享设施（`setup.hpp`）：64 对 `socketpair(AF_UNIX, SOCK_STREAM)`；同一进程内的**单线程事件循环服务端**：`ppoll` 监听 64 个服务端 fd，收到 8 字节请求后记录 `deadline = now + 1ms`，到期回 8 字节。服务线程在 `init()` 内创建（早于 harness 绑核），并显式绑到物理核 4（`run_all.sh` 的客户端是核 2；手动运行避免 `--cpu 4`）；客户端主线程由 `--cpu` 绑定（`run_all.sh` 用 2）。
+- 服务端生命周期：RAII，析构时置 stop flag、写 eventfd 唤醒 `ppoll`、join；不得把 joinable 线程放进会被静态析构的全局 `std::vector<std::thread>`。
+- baseline：64 个请求逐个发送并等待响应，累加。
+- optimized：先发出全部 64 个请求，再统一收齐 64 个响应，累加。
+- 校验和：64 个响应之和；两变体相同。
+- 计时口径：服务端、连接和缓冲区在 `init()` 建好；`body()` 只发请求、收响应，不在计时区内建连。
+- `default_inner`：baseline 2，optimized 128；使单次重复落在 100–500 ms。
+- 预期：约 50x（本机探针：64 次串行 `sleep(1ms)` 中位 68 ms；64 个独立等待完全重叠时约 1.1 ms，单线程事件循环服务端预期同量级）。
+- 资源检查：`RLIMIT_NOFILE` 不足以容纳 128 个 fd 时 SKIP；`socketpair` 或服务线程创建失败时 SKIP。
+- 实现要点：8 字节消息也必须在 `SOCK_STREAM` 上循环读写到足量；忽略 `SIGPIPE`；服务端只处理完整请求；`--verify` 下两个变体各跑一次 `body()`。
+- `semantics:` 服务端是同进程内的单线程事件循环，1 ms 是模拟处理延迟；两变体的请求/响应内容一致；本实验只测等待重叠，不测协程或线程管理成本。
+
+### 4.1.1b `4.1.1b_coroutine_vs_thread`
+
+覆盖「用协程降低并发编程成本」与「等待期间不占住线程资源」。本实验测运行时任务成本；代码可读性收益在 README 定性说明。
+
+- 任务：N=4096 个并发任务，每个等待 1 ms 后写 `out[i] = i * 2654435761u`；校验和为全部 `out[i]` 之和。optimized 的所有协程共享 `body()` 开头取的 deadline；baseline 的每个线程各自 `sleep_for(1ms)`（4096 次线程创建耗时约 70 ms，若共享同一个绝对 deadline，晚创建的线程将几乎不等待，削弱「阻塞线程占调度资源」的语义）。
+- baseline：`pthread_create` N 个线程，`pthread_attr_setstacksize` 设 64 KB 栈，每个线程 `sleep_for(1ms)` 后写自己的结果，主线程 join。线程继承主线程亲和性（`run_all.sh` 用 `--cpu 2`），这是有意为之：等待期间占住的调度资源也计入成本。
+- optimized：单线程事件循环 + N 个 C++20 协程；`initial_suspend = suspend_never`，`co_await TimerAwaiter{deadline}` 把 handle 推入最小堆，`clock_nanosleep` 到最近 deadline 后逐个 resume；完成的 frame 由 loop 统一 destroy。无额外线程。
+- 校验和：Σ `out[i]`；两变体相同。
+- 计时口径：线程/协程的创建、等待和回收是待测工作量，允许在 `body()` 内进行；`out` 数组在 `init()` 分配，`body()` 只写结果。
+- `default_inner`：baseline 2，optimized 128；以实测校准到 100–500 ms。
+- 预期：约 35x（本机探针：4096 个 64 KB 栈线程 + 1 ms 等待 + join 中位 74.7 ms；协程版估计 1–3 ms）。
+- 约束：baseline 的 N 个线程是自变量，**不受「线程数 ≤ 6」限制**；本实验不测多核并行。`init()` 检查 `RLIMIT_NPROC` 和 cgroup `pids.max`；`pthread_create` 部分失败时 join 已建线程并抛 `bench::Skip`。
+- 实现要点：`std::thread` 不能设栈大小，必须用 pthread；明确协程 frame 所有权，避免 loop 与包装器双重销毁；线程数与虚拟地址空间只作报告备注——本机探针 RSS 约 37 MB，不要宣称上百 MB 的内存收益。
+- `semantics:` 两变体的任务数相同、每任务约 1 ms 等待、返回值完全一致；baseline 每任务一个 OS 线程，optimized 每任务一个协程跑在单线程事件循环上；本实验测任务管理成本，不测代码可读性。
+
+### 4.1.2a `4.1.2a_epoll_vs_poll`
+
+覆盖「使用 epoll/kqueue/IOCP」与「避免大量线程阻塞等待」的就绪检查路径。
+
+- 共享设施（`setup.hpp`）：10,000 对 `socketpair(AF_UNIX, SOCK_STREAM)`；10,000 个接收 fd 全部注册进 epoll；`init()` 准备 10,000 项的 `pollfd` 数组、epoll fd 和源缓冲区；检查 `RLIMIT_NOFILE`，低于 32768 时 SKIP，创建 socketpair 失败也 SKIP。
+- 活跃连接：只有 1 条持续有数据，其余 9,999 条空闲。这代表事件驱动服务器「大多数连接空闲」的形态。
+- `body()`：先一次性写入 M=500 条 1 KB 消息（共 500 KB，`SO_SNDBUF`/`SO_RCVBUF` 设 1 MB），然后重复 M 次：baseline 用 `poll()` 扫描全部 10,000 个 fd，optimized 用 `epoll_wait()` 等待就绪列表；每次检查后从活跃 fd 读 1 KB 并累加 payload 和。
+- 校验和：M 条消息的 payload 和；两变体相同。
+- 计时口径：500 KB 的写入是待测工作量（发送端），两变体相同；`init()` 只建连接、缓冲区和 epoll 注册，不预填消息。
+- `default_inner`：baseline 1，optimized 256；使单次重复落在 100–500 ms。
+- 预期：100x 量级（本机探针：10k fd 上 2000 次就绪检查，`poll` 1027 ms，`epoll` 0.75 ms；M=500 时约 250 ms 对 1 ms）。原计划的 10–50x 偏保守，以实测为准。
+- 实现要点：大 `write` 和 1 KB `read` 都要循环到足量；epoll 用水平触发；`poll` 的 `revents` 每轮由内核重写；不要把活跃连接改成 200 条同时就绪——那会让 `poll` 只扫描少数几次，测不到 O(N) 成本。
+- `semantics:` 只有 1 条连接持续有数据，其余空闲；每次就绪检查只处理一条消息，读写开销两变体相同；本实验只隔离就绪检查路径，比值不代表真实服务器端到端收益。
+
+### 4.1.2b `4.1.2b_long_task_offload`（可选，默认保留）
+
+覆盖「控制事件循环中的长任务」。本实验测吞吐/并行，不测尾延迟。
+
+- 任务：20 个 5 ms 长任务 + 200 个 0.5 ms 短任务；计算经 `bench::keep()` 防止消除；校验和为所有任务结果之和。
+- baseline：单线程顺序执行全部任务，约 200 ms。
+- optimized：短任务在主线程（`run_all.sh` 用 `--cpu 2`）执行，长任务交给一个 worker 线程；worker 在 `body()` 内创建，必须在 worker 启动时显式绑到物理核 4（否则继承主线程的 CPU 2，等于没有并行）；join 后约 100 ms。
+- `default_inner`：baseline 4，optimized 4；256 MB 单趟时单次重复约 31–51 ms，放大 inner 使单次重复落入 100–500 ms；两变体取相同 inner，保证原始 `sys_ns`（per-rep）可直接比较（per-body 比值不变，不是为制造收益调参）。
+- 预期：约 2x（一个 worker 的上限）。
+- `semantics:` 本实验把长任务移出事件循环以换取吞吐，不是尾延迟；长任务对同一循环内定时器的影响在 README 定性说明。若时间预算紧张，可先不做，但要在 README 中说明缺口。
 
 ### 4.2.1 `4.2.1_zero_copy`
 - 准备 256 MB 文件（`$HOME/.cache/perf-opt-overview/`，不用 `/tmp`）；本地 TCP sink 线程负责读取并丢弃。
 - baseline：`read` 64 KB 到用户缓冲区，再 `write` 到 socket。
-- optimized：`sendfile(out_fd, in_fd, NULL, len)`。
+- optimized：`sendfile(out_fd, in_fd, &offset, len)`，`offset` 每个 `body()` 从 0 开始。
 - 校验和：发送字节数。
 - 规模：256 MB；`init()` 先读一遍文件预热 page cache。
 - 预期：1.5–3x（墙钟），系统态时间应明显下降。
@@ -716,9 +760,9 @@ git commit -am "feat: 存储层次 B 组 5 个对比实验"
 
 ### 注册
 
-在 `exp/CMakeLists.txt` 注册 `4.1.1_async_wait`、`4.1.2_epoll_vs_poll`、`4.2.1_zero_copy`、`4.2.2_batching`、`4.3.1_syscall_overhead`；均无额外编译选项。
+在 `exp/CMakeLists.txt` 注册 `4.1.1a_async_overlap`、`4.1.1b_coroutine_vs_thread`、`4.1.2a_epoll_vs_poll`、`4.1.2b_long_task_offload`（可选）、`4.2.1_zero_copy`、`4.2.2_batching`、`4.3.1_syscall_overhead`；均无额外编译选项。
 
-- [ ] **Step 1: 按规格创建 5 个实验目录**
+- [ ] **Step 1: 按规格创建 6 个核心实验目录（4.1.2b 可选，最后做）**
 - [ ] **Step 2: 注册、构建、跑 CTest**
 
 ```bash
@@ -726,11 +770,11 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"$(nproc
 ctest --test-dir build --output-on-failure -R '4_1_1|4_1_2|4_2_1|4_2_2|4_3_1'
 ```
 
-- [ ] **Step 3: 实测确认方向；4.2.1 同时记录 `sys_ns`，报告中与墙钟并列**
+- [ ] **Step 3: 实测确认方向；4.2.1 同时记录 `sys_ns`，报告中与墙钟并列。4.1.1a 若服务端与客户端争抢同一核，先检查服务线程绑核；4.1.1b 若比值远低于预期，先检查线程是否被压到单核、`pthread_create` 是否退化；4.1.2a 若比值远低于预期，先确认同一时刻只有少量连接就绪。**
 - [ ] **Step 4: 提交**
 
 ```bash
-git commit -am "feat: I/O 与系统交互 5 个对比实验"
+git commit -am "feat: I/O 与系统交互 6 个对比实验（含 4.1 异步等待、协程与多路复用）"
 ```
 
 ---
