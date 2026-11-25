@@ -27,6 +27,13 @@ inline void init_base() {
   g_table.reserve(kN);
   for (int i = 0; i < kN; ++i) {
     uint32_t key = static_cast<uint32_t>(i) * 2654435761u;
+    // 仅乘奇数时 key 的低 j 位只依赖 i 的低 j 位，
+    // 低 16 位以 65536 为周期重复，而异或右移可消除这种结构（哈希表常用低位取桶）。
+    // (i*c) mod 2^j = ((i mod 2^j) * c) mod 2^j
+    //               W= (((i + 2^j) mod 2^j) * c) mod 2^j
+    //    key & 3 以 2^3 为周期重复
+    //    key & 7 以 2^4 为周期重复
+    // 该映射自逆（y ^ (y >> 16) 即还原），是双射，故不破坏 key 的唯一性。
     key ^= key >> 16;
     g_table.push_back(Entry{key, key >> 7});
   }
