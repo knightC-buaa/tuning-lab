@@ -43,4 +43,4 @@ uint64_t body() {
   return sent;
 }
 
-BENCH_MAIN("4.2.1_zero_copy", "optimized", 1)
+BENCH_MAIN("4.2.1_zero_copy", "optimized", 4)
