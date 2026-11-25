@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -22,8 +23,9 @@ std::string read_file(const char* path) {
 }
 
 std::string capture_stdout(void (*child_main)(), int& exit_code) {
-  char path[] = "/tmp/bench_test_XXXXXX";
-  const int fd = mkstemp(path);
+  std::string path =
+      (std::filesystem::temp_directory_path() / "bench_test_XXXXXX").string();
+  const int fd = mkstemp(path.data());
   CHECK(fd >= 0);
 
   const pid_t pid = fork();
@@ -41,8 +43,8 @@ std::string capture_stdout(void (*child_main)(), int& exit_code) {
   CHECK(WIFEXITED(status));
   exit_code = WEXITSTATUS(status);
 
-  const std::string out = read_file(path);
-  unlink(path);
+  const std::string out = read_file(path.c_str());
+  unlink(path.c_str());
   return out;
 }
 
