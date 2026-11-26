@@ -3,3 +3,4 @@ results/*
 !results/.gitkeep
 *.o
 __pycache__/
+.vscode/
