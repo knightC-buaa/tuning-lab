@@ -20,10 +20,10 @@ namespace bench {
 namespace {
 
 void usage(const char* prog) {
-  std::fprintf(stderr,
-               "用法: %s [--reps N] [--inner N] [--cpu N] [--warmup N] "
-               "[--verify]\n",
-               prog);
+    std::fprintf(stderr,
+                 "用法: %s [--reps N] [--inner-reps N] [--cpu N] [--warmup N] "
+                 "[--verify]\n",
+                 prog);
 }
 
 long parse_long(const char* flag, const char* value) {
@@ -37,6 +37,10 @@ long parse_long(const char* flag, const char* value) {
   return v;
 }
 
+// 读取 cpu0 当前的 cpufreq governor（如 performance/schedutil/powersave）。
+// 仅作测量环境元数据：调用方写入结果 JSON 的 governor 字段，用于事后判断
+// 频率漂移是否会污染计时；不修改任何系统设置。
+// 文件不可读（容器/虚拟机/未挂 cpufreq）时返回 "unknown"，不视为错误。
 std::string read_governor() {
   std::ifstream in("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor");
   std::string s;
@@ -56,6 +60,10 @@ std::string now_iso8601() {
   return buf;
 }
 
+// 返回进程自启动以来累计的内核态 CPU 时间（ru_stime），单位纳秒。
+// 该值覆盖进程内所有线程，且是累计量：需在测量区间前后各取一次并作差，
+// 才能得到该区间的系统态耗时（bench::run 中按每个 rep 做差并累加）。
+// 精度受 getrusage 限制（微秒级）；调用失败时返回 0。
 long long sys_time_ns() {
   rusage ru{};
   if (getrusage(RUSAGE_SELF, &ru) != 0) {
@@ -87,39 +95,40 @@ Config parse_args(int argc, char** argv) {
         std::exit(1);
       }
       cfg.reps = static_cast<int>(v);
-    } else if (arg == "--inner") {
-      const long v = parse_long("--inner", need_value("--inner"));
-      if (v < 1) {
-        std::fprintf(stderr, "错误: --inner 必须 >= 1\n");
-        std::exit(1);
-      }
-      cfg.inner = v;
-      cfg.inner_set = true;
+    } else if (arg == "--inner-reps") {
+        const long v = parse_long("--inner-reps", need_value("--inner-reps"));
+        if (v < 1) {
+            std::fprintf(stderr, "错误: --inner-reps 必须 >= 1\n");
+            std::exit(1);
+        }
+        cfg.inner_reps = v;
+        cfg.inner_reps_set = true;
     } else if (arg == "--cpu") {
-      const long v = parse_long("--cpu", need_value("--cpu"));
-      if (v < -1) {
-        std::fprintf(stderr, "错误: --cpu 必须 >= -1\n");
-        std::exit(1);
-      }
-      cfg.cpu = static_cast<int>(v);
+        const long v = parse_long("--cpu", need_value("--cpu"));
+        if (v < -1) {
+            std::fprintf(stderr, "错误: --cpu 必须 >= -1\n");
+            std::exit(1);
+        }
+        cfg.cpu = static_cast<int>(v);
     } else if (arg == "--warmup") {
-      const long v = parse_long("--warmup", need_value("--warmup"));
-      if (v < 0) {
-        std::fprintf(stderr, "错误: --warmup 必须 >= 0\n");
-        std::exit(1);
-      }
-      cfg.warmup = static_cast<int>(v);
+        const long v = parse_long("--warmup", need_value("--warmup"));
+        if (v < 0) {
+            std::fprintf(stderr, "错误: --warmup 必须 >= 0\n");
+            std::exit(1);
+        }
+        cfg.warmup = static_cast<int>(v);
     } else if (arg == "--verify") {
-      cfg.verify = true;
+        cfg.verify = true;
     } else {
-      std::fprintf(stderr, "错误: 未知参数 %s\n", arg.c_str());
-      usage(argv[0]);
-      std::exit(1);
+        std::fprintf(stderr, "错误: 未知参数 %s\n", arg.c_str());
+        usage(argv[0]);
+        std::exit(1);
     }
   }
   return cfg;
 }
 
+// 计算中位数，若 xs 为空返回 0.0
 double median(std::vector<double> xs) {
   if (xs.empty()) {
     return 0.0;
@@ -148,7 +157,7 @@ double percentile(std::vector<double> xs, double p) {
 std::string to_json(const Result& r) {
   std::ostringstream os;
   os << "{\"exp\":\"" << r.exp << "\",\"variant\":\"" << r.variant << "\"";
-  os << ",\"reps\":" << r.reps << ",\"inner\":" << r.inner;
+  os << ",\"reps\":" << r.reps << ",\"inner_reps\":" << r.inner_reps;
   os << ",\"samples_ns\":[";
   os << std::setprecision(17);
   for (size_t i = 0; i < r.samples_ns.size(); ++i) {
@@ -176,84 +185,86 @@ std::string to_json(const Result& r) {
   return os.str();
 }
 
-int run(const std::string& exp_id, const std::string& variant,
-        const Config& cfg, Body body, long default_inner, Init init,
-        const char* semantics) {
-  Result r;
-  r.exp = exp_id;
-  r.variant = variant;
-  r.reps = cfg.reps;
-  r.inner = cfg.inner_set ? cfg.inner : default_inner;
-  r.cpu = cfg.cpu;
-  r.governor = read_governor();
-  r.ts = now_iso8601();
-  r.semantics = semantics == nullptr ? "" : semantics;
-  r.verify = cfg.verify;
+int run(const std::string& exp_id, const std::string& variant, const Config& cfg, Body body, long default_inner_reps,
+        Init init, const char* semantics)
+{
+    Result r;
+    r.exp = exp_id;
+    r.variant = variant;
+    r.reps = cfg.reps;
+    r.inner_reps = cfg.inner_reps_set ? cfg.inner_reps : default_inner_reps;
+    r.cpu = cfg.cpu;
+    r.governor = read_governor();
+    r.ts = now_iso8601();
+    r.semantics = semantics == nullptr ? "" : semantics;
+    r.verify = cfg.verify;
 
-  auto emit = [](const Result& rr) {
-    std::cout << to_json(rr) << '\n';
-    std::cout.flush();
-  };
+    auto print = [](const Result& result)
+    {
+        std::cout << to_json(result) << '\n';
+        std::cout.flush();
+    };
 
-  try {
-    init();
+    try {
+        init();
 
-    if (cfg.verify) {
-      r.checksum = body();
-      emit(r);
-      return 0;
-    }
+        if (cfg.verify) {
+            // body()只跑一次, 不做性能测量
+            //  输出 checksum 后退出, checksum输出给外部用于校验
+            r.checksum = body();
+            print(r);
+            return 0;
+        }
 
-    if (cfg.cpu >= 0 && !pin_current_thread(cfg.cpu)) {
-      std::fprintf(stderr, "警告: 无法绑定到 CPU %d，继续运行\n", cfg.cpu);
-    }
+        if (cfg.cpu >= 0 && !pin_current_thread(cfg.cpu)) {
+            std::fprintf(stderr, "警告: 无法绑定到 CPU %d，继续运行\n", cfg.cpu);
+        }
 
-    for (int i = 0; i < cfg.warmup; ++i) {
-      body();
-    }
+        for (int i = 0; i < cfg.warmup; ++i) {
+            body();
+        }
 
-    uint64_t expected = 0;
-    bool first = true;
-    for (int rep = 0; rep < cfg.reps; ++rep) {
-      const auto t0 = std::chrono::steady_clock::now();
-      const long long s0 = sys_time_ns();
-      uint64_t checksum = 0;
-      for (long i = 0; i < r.inner; ++i) {
-        checksum = body();
-      }
-      const long long s1 = sys_time_ns();
-      const auto t1 = std::chrono::steady_clock::now();
+        uint64_t expected = 0;
+        bool first = true;
+        for (int rep = 0; rep < cfg.reps; ++rep) {
+            const auto t0 = std::chrono::steady_clock::now();
+            const long long s0 = sys_time_ns();
+            uint64_t checksum = 0;
+            for (long i = 0; i < r.inner_reps; ++i) {
+                checksum = body();
+            }
+            const long long s1 = sys_time_ns();
+            const auto t1 = std::chrono::steady_clock::now();
 
-      const double total_ns =
-          std::chrono::duration<double, std::nano>(t1 - t0).count();
-      r.samples_ns.push_back(total_ns / static_cast<double>(r.inner));
-      r.sys_ns += static_cast<double>(s1 - s0);
+            const double total_ns = std::chrono::duration<double, std::nano>(t1 - t0).count();
+            r.samples_ns.push_back(total_ns / static_cast<double>(r.inner_reps));
+            r.sys_ns += static_cast<double>(s1 - s0);
 
-      if (first) {
-        expected = checksum;
-        first = false;
-      } else if (checksum != expected) {
-        std::fprintf(stderr, "错误: checksum 在重复之间不一致\n");
+            if (first) {
+                expected = checksum;
+                first = false;
+            } else if (checksum != expected) {
+                std::fprintf(stderr, "错误: checksum 在重复之间不一致\n");
+                return 1;
+            }
+        }
+
+        r.checksum = expected;
+        r.sys_ns /= static_cast<double>(cfg.reps);
+        r.median_ns = median(r.samples_ns);
+        r.min_ns = *std::min_element(r.samples_ns.begin(), r.samples_ns.end());
+        r.p90_ns = percentile(r.samples_ns, 0.9);
+
+        print(r);
+        return 0;
+    } catch (const Skip& e) {
+        r.skip = e.what();
+        print(r);
+        return 2;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "错误: %s\n", e.what());
         return 1;
-      }
     }
-
-    r.checksum = expected;
-    r.sys_ns /= static_cast<double>(cfg.reps);
-    r.median_ns = median(r.samples_ns);
-    r.min_ns = *std::min_element(r.samples_ns.begin(), r.samples_ns.end());
-    r.p90_ns = percentile(r.samples_ns, 0.9);
-
-    emit(r);
-    return 0;
-  } catch (const Skip& e) {
-    r.skip = e.what();
-    emit(r);
-    return 2;
-  } catch (const std::exception& e) {
-    std::fprintf(stderr, "错误: %s\n", e.what());
-    return 1;
-  }
 }
 
 } // namespace bench

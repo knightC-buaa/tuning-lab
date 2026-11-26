@@ -8,19 +8,19 @@
 namespace bench {
 
 struct Config {
-  int reps = 5;        // 外层重复次数
-  long inner = 1;      // 每次重复内 body() 的调用次数
-  bool inner_set = false;  // 是否显式传入 --inner
-  int cpu = -1;        // -1 不绑核；>=0 绑到该逻辑 CPU
-  int warmup = 2;
-  bool verify = false; // 只跑一次 body()，输出 checksum 后退出
+    int reps = 5;                 // 外层重复次数
+    long inner_reps = 1;          // 每次重复内 body() 的调用次数
+    bool inner_reps_set = false;  // 是否显式传入 --inner-reps
+    int cpu = -1;                 // -1 不绑核；>=0 绑到该逻辑 CPU
+    int warmup = 2;               // 把 cache、分支预测器预热, 跑 warmup 次 body()，不计入性能测量
+    bool verify = false;          // 如果true, 只跑一次 body()，输出 checksum 后退出, 只做正确性校验，不做性能测量
 };
 
 struct Result {
   std::string exp;
   std::string variant;
   int reps = 0;
-  long inner = 0;
+  long inner_reps = 0;
   std::vector<double> samples_ns;  // 每次重复的「单次 body 耗时」
   double median_ns = 0;
   double min_ns = 0;
@@ -48,14 +48,15 @@ using Body = uint64_t (*)();
 using Init = void (*)();
 
 // 返回 0 成功，1 参数/校验错误，2 SKIP
-int run(const std::string& exp_id, const std::string& variant,
-        const Config& cfg, Body body, long default_inner, Init init,
-        const char* semantics);
+int run(const std::string& exp_id, const std::string& variant, const Config& cfg, Body body, long default_inner_reps,
+        Init init, const char* semantics);
 
 } // namespace bench
 
-#define BENCH_MAIN(EXP_ID, VARIANT, INNER)                              \
-  int main(int argc, char** argv) {                                     \
-    auto cfg = bench::parse_args(argc, argv);                           \
-    return bench::run(EXP_ID, VARIANT, cfg, body, INNER, init, kSemantics); \
-  }
+// VARIANT取值为{baseline optimized}二选一
+#define BENCH_MAIN(EXP_ID, VARIANT, INNER_REPS)                                                                        \
+    int main(int argc, char** argv)                                                                                    \
+    {                                                                                                                  \
+        auto cfg = bench::parse_args(argc, argv);                                                                      \
+        return bench::run(EXP_ID, VARIANT, cfg, body, INNER_REPS, init, kSemantics);                                   \
+    }

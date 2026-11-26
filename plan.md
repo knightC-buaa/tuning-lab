@@ -22,7 +22,7 @@
 - 每个实验必须能在 `--verify` 下独立退出 0。环境不满足时抛 `bench::Skip`，退出码 2，CTest 记为 SKIP。
 - 线程数 ≤ 6，只使用物理核 `{0,2,4,6,8,10}`，不得使用超线程兄弟核。例外：4.1.1b 的 baseline 以并发任务数为自变量，故意使用 N 个线程；该实验不受线程数上限约束，但不得据此声称多核并行收益。
 - 单实验常驻内存 ≤ 1.2 GB（3.3.2 为 1 GB，其余更小）。
-- 单次重复 100–500 ms；必要时用 `--inner` 放大。全套 3 轮必须在 15 分钟内跑完。4.1 的每个实验规格必须写明 baseline 与 optimized 的 `default_inner`（`run_all.sh` 不会传 `--inner`）。
+- 单次重复 100–500 ms；必要时用 `--inner-reps` 放大。全套 3 轮必须在 15 分钟内跑完。4.1 的每个实验规格必须写明 baseline 与 optimized 的 `default_inner_reps`（`run_all.sh` 不会传 `--inner-reps`）。
 - 负收益、无差异、噪声过大都必须如实进入报告。除修正实现错误外，不得通过反复调参制造正收益。
 - 无第三方依赖。4.3.2 是唯一例外，见 Task 8 的依赖闸门。
 - 需要真实磁盘行为的实验（4.2.1、4.3.2、6.4.2）把文件放在 `$HOME/.cache/perf-opt-overview/`（本机为 ext4/NVMe），**不得放 `/tmp`**：本机 `/tmp` 是 tmpfs，`fsync` 几乎免费，会把结论做反。其他临时文件用 `std::filesystem::temp_directory_path()/<exp_id>-<pid>/`，实验结束清理。
@@ -123,11 +123,11 @@ perf-opt-overview/
 
 | 接口 | 位置 | 契约 |
 |---|---|---|
-| `bench::Config` | `common/bench.hpp` | `reps`、`inner`、`inner_set`、`cpu`、`warmup`、`verify`。 |
-| `bench::Result` | `common/bench.hpp` | 实验 id、variant、reps/inner、samples_ns、median/min/p90、sys_ns、checksum、cpu、governor、ts、semantics、verify、skip。注意：`samples_ns` / `median_ns` / `min_ns` / `p90_ns` 为 per-body；`sys_ns` 为 per-rep（累加后除以 reps，**不除以 inner**），不同 `inner` 的 `sys_ns` 不可直接比较。 |
+| `bench::Config` | `common/bench.hpp` | `reps`、`inner_reps`、`inner_reps_set`、`cpu`、`warmup`、`verify`。 |
+| `bench::Result` | `common/bench.hpp` | 实验 id、variant、reps/inner_reps、samples_ns、median/min/p90、sys_ns、checksum、cpu、governor、ts、semantics、verify、skip。注意：`samples_ns` / `median_ns` / `min_ns` / `p90_ns` 为 per-body；`sys_ns` 为 per-rep（累加后除以 reps，**不除以 inner_reps**），不同 `inner_reps` 的 `sys_ns` 不可直接比较。 |
 | `bench::Skip` | `common/bench.hpp` | 环境不满足时抛出；`run` 捕获后输出 skip JSON 并返回 2。 |
-| `bench::parse_args` | `common/bench.hpp/.cpp` | 解析 `--reps`、`--inner`、`--cpu`、`--warmup`、`--verify`；非法值打印错误并退出 1。 |
-| `bench::run` | `common/bench.hpp/.cpp` | `run(exp, variant, cfg, body, default_inner, init, semantics)`；返回 0 成功、1 参数/校验错误、2 SKIP；正常路径计时并输出一行 JSONL。 |
+| `bench::parse_args` | `common/bench.hpp/.cpp` | 解析 `--reps`、`--inner-reps`、`--cpu`、`--warmup`、`--verify`；非法值打印错误并退出 1。 |
+| `bench::run` | `common/bench.hpp/.cpp` | `run(exp, variant, cfg, body, default_inner_reps, init, semantics)`；返回 0 成功、1 参数/校验错误、2 SKIP；正常路径计时并输出一行 JSONL。 |
 | `BENCH_MAIN` | `common/bench.hpp` | 生成 `main()`；依赖每个实验定义的 `init()`、`body()`、`kSemantics`。 |
 | `bench::median` / `percentile` | `common/bench.hpp/.cpp` | 排序后取中位数；percentile 用最近秩法。 |
 | `bench::to_json` | `common/bench.hpp/.cpp` | 手工拼装 JSONL；checksum 以 `0x` 开头；`verify` / `skip` 按需出现。 |
@@ -140,7 +140,7 @@ perf-opt-overview/
 约定：
 
 - 每个实验的 `setup.hpp` 用 `inline` 变量存放共享数据，提供 `inline void init_base()`，并定义 `constexpr const char* kSemantics = "..."`（没有语义差异时写 `""`）。
-- 每个 `baseline.cpp` / `optimized.cpp` 各自定义 `void init()`（内部先调用 `init_base()`，需要时再做本变体的准备），并定义 `uint64_t body()`，末尾调用 `BENCH_MAIN("<id>", "<variant>", <default_inner>)`。
+- 每个 `baseline.cpp` / `optimized.cpp` 各自定义 `void init()`（内部先调用 `init_base()`，需要时再做本变体的准备），并定义 `uint64_t body()`，末尾调用 `BENCH_MAIN("<id>", "<variant>", <default_inner_reps>)`。
 - `body()` 只能读取 `init()` 建好的数据，不得在计时区内做数据初始化。
 - baseline 与 optimized 的 checksum 必须相同；等价性由 `scripts/verify_exp.py` 在 CTest 中比较，不另设独立 oracle。
 - `physical_cores()` 本机应返回 `{0,2,4,6,8,10}`。
@@ -168,7 +168,7 @@ perf-opt-overview/
 
 **验证：** `ctest --test-dir build --output-on-failure -R 'bench_unit|pinning'` → 2/2 PASS；`physical_cores()` 返回 `{0,2,4,6,8,10}`。
 
-**Rulings：** 见 `.superpowers/sdd/plan/progress.md`（`Config::inner_set`、`exp_index.txt` 截断、额外测试覆盖、`compile_commands`）。
+**Rulings：** 见 `.superpowers/sdd/plan/progress.md`（`Config::inner_reps_set`、`exp_index.txt` 截断、额外测试覆盖、`compile_commands`）。
 
 ---
 
@@ -431,7 +431,7 @@ git commit -m "feat: 试点实验 2.1.1 哈希 vs 线性扫描"
 - baseline：对 2000 万个 int32 全部执行 8 次乘加的整型多项式，再求和。
 - optimized：数据中 7/8 为 0；跳过 0，只对非 0 元素计算，并把循环不变量外提。
 - 校验和：固定数据求和，两者必须相同。
-- 规模：N=20,000,000，`inner=1`。
+- 规模：N=20,000,000，`inner_reps=1`。
 - 预期：5–8x。
 - 选项：两者都加 `-fno-tree-vectorize`，隔离剪枝效果。
 - 注意：多项式必须依赖 `i`，避免编译器把整段常量折叠。
@@ -440,7 +440,7 @@ git commit -m "feat: 试点实验 2.1.1 哈希 vs 线性扫描"
 - baseline：4 条独立 LCG 链，每条 3200 万步，**依次**跑完一条再跑下一条。
 - optimized：同一个循环里每轮更新 4 条链，暴露指令级并行。
 - 校验和：4 条链最终值的 XOR，两者相同。
-- 规模：4 × 32,000,000 步，`inner=1`。
+- 规模：4 × 32,000,000 步，`inner_reps=1`。
 - 预期：2–4x。
 - 注意：不要用浮点；整数 LCG 不存在重结合问题。
 
@@ -448,7 +448,7 @@ git commit -m "feat: 试点实验 2.1.1 哈希 vs 线性扫描"
 - baseline：对 6400 万个随机 int32 做 `if (x > 0) { sum += x; count++; }`；编译加 `-fno-if-conversion -fno-if-conversion2`，阻止 GCC 自动改成无分支。
 - optimized：`sum += (x > 0) ? x : 0; count += (x > 0);`，编译不加这两个选项。
 - 校验和：把 sum 与 count 组合成一个 uint64（例如 `sum ^ (uint64_t(count) << 32)`），两者相同。
-- 规模：N=64,000,000，`inner` 调到单次约 200 ms。
+- 规模：N=64,000,000，`inner_reps` 调到单次约 200 ms。
 - 预期：2–4x。
 - 注意：数据随机且固定种子，保证分支不可预测；`semantics:` 注明两种实现计算结果相同。
 
@@ -456,7 +456,7 @@ git commit -m "feat: 试点实验 2.1.1 哈希 vs 线性扫描"
 - baseline：对 3200 万个 int32 做两遍独立循环，第一遍求和，第二遍统计正数个数；两个循环之间调用 `bench::clobber()`，确保编译器不把它们融合。
 - optimized：融合成一个循环，同时求和与计数。
 - 校验和：`sum ^ (uint64_t(count) << 32)`，两者相同。
-- 规模：N=32,000,000，`inner` 调到单次约 200 ms。
+- 规模：N=32,000,000，`inner_reps` 调到单次约 200 ms。
 - 预期：1.5–2.5x（内存流量减半）。
 - 注意：`bench::clobber()` 是为了隔离「源码层面的循环结构」这一变量；报告中注明 baseline 带编译器屏障。
 
@@ -464,7 +464,7 @@ git commit -m "feat: 试点实验 2.1.1 哈希 vs 线性扫描"
 - baseline：标量循环 `sum += a[i] * b[i]`（uint32 环绕），编译选项 `-fno-tree-vectorize`。
 - optimized：AVX2 `_mm256_mullo_epi32` + `_mm256_add_epi32`，末尾水平归约，编译选项 `-mavx2 -mfma`。
 - 校验和：uint32 环绕和（加法在模 2^32 下可任意分组，两者必等）。
-- 规模：N=2,000,000，数组共 16 MB，驻留 L3；`inner` 调到单次约 200 ms。
+- 规模：N=2,000,000，数组共 16 MB，驻留 L3；`inner_reps` 调到单次约 200 ms。
 - 预期：4–8x。
 - 注意：数组不要超过 L3，否则变成内存带宽测试，SIMD 差距被掩盖。
 
@@ -479,7 +479,7 @@ git commit -m "feat: 试点实验 2.1.1 哈希 vs 线性扫描"
 - baseline：`std::vector<std::unique_ptr<Shape>>`，循环里通过基类指针调用 `virtual uint64_t area()`；编译加 `-fno-devirtualize`。
 - optimized：`std::vector<Rect>`，直接调用内联方法。
 - 校验和：所有 `area()` 之和。
-- 规模：8,000,000 个对象 × 20 遍，`inner` 调到单次约 300 ms。
+- 规模：8,000,000 个对象 × 20 遍，`inner_reps` 调到单次约 300 ms。
 - 预期：2–5x。
 - 注意：`semantics:` 注明两者计算相同的面积和；baseline 的 `-fno-devirtualize` 是为了隔离「运行时派发」这一变量。
 
@@ -558,7 +558,7 @@ git commit -m "feat: 计算效率 7 组对比实验"
 - baseline：4096×4096 int32 矩阵按列遍历求和（跨步 4096）。
 - optimized：按行遍历求和。
 - 校验和：相同。
-- 规模：64 MB 矩阵，`inner` 调到单次约 200 ms。
+- 规模：64 MB 矩阵，`inner_reps` 调到单次约 200 ms。
 - 预期：5–15x。
 - 选项：两者 `-fno-tree-vectorize`，避免行遍历被自动向量化而混淆变量。
 
@@ -689,7 +689,7 @@ git commit -am "feat: 存储层次 B 组 5 个对比实验"
 - optimized：先发出全部 64 个请求，再统一收齐 64 个响应，累加。
 - 校验和：64 个响应之和；两变体相同。
 - 计时口径：服务端、连接和缓冲区在 `init()` 建好；`body()` 只发请求、收响应，不在计时区内建连。
-- `default_inner`：baseline 2，optimized 128；使单次重复落在 100–500 ms。
+- `default_inner_reps`：baseline 2，optimized 128；使单次重复落在 100–500 ms。
 - 预期：约 50x（本机探针：64 次串行 `sleep(1ms)` 中位 68 ms；64 个独立等待完全重叠时约 1.1 ms，单线程事件循环服务端预期同量级）。
 - 资源检查：`RLIMIT_NOFILE` 不足以容纳 128 个 fd 时 SKIP；`socketpair` 或服务线程创建失败时 SKIP。
 - 实现要点：8 字节消息也必须在 `SOCK_STREAM` 上循环读写到足量；忽略 `SIGPIPE`；服务端只处理完整请求；`--verify` 下两个变体各跑一次 `body()`。
@@ -704,7 +704,7 @@ git commit -am "feat: 存储层次 B 组 5 个对比实验"
 - optimized：单线程事件循环 + N 个 C++20 协程；`initial_suspend = suspend_never`，`co_await TimerAwaiter{deadline}` 把 handle 推入最小堆，`clock_nanosleep` 到最近 deadline 后逐个 resume；完成的 frame 由 loop 统一 destroy。无额外线程。
 - 校验和：Σ `out[i]`；两变体相同。
 - 计时口径：线程/协程的创建、等待和回收是待测工作量，允许在 `body()` 内进行；`out` 数组在 `init()` 分配，`body()` 只写结果。
-- `default_inner`：baseline 2，optimized 128；以实测校准到 100–500 ms。
+- `default_inner_reps`：baseline 2，optimized 128；以实测校准到 100–500 ms。
 - 预期：约 35x（本机探针：4096 个 64 KB 栈线程 + 1 ms 等待 + join 中位 74.7 ms；协程版估计 1–3 ms）。
 - 约束：baseline 的 N 个线程是自变量，**不受「线程数 ≤ 6」限制**；本实验不测多核并行。`init()` 检查 `RLIMIT_NPROC` 和 cgroup `pids.max`；`pthread_create` 部分失败时 join 已建线程并抛 `bench::Skip`。
 - 实现要点：`std::thread` 不能设栈大小，必须用 pthread；明确协程 frame 所有权，避免 loop 与包装器双重销毁；线程数与虚拟地址空间只作报告备注——本机探针 RSS 约 37 MB，不要宣称上百 MB 的内存收益。
@@ -719,7 +719,7 @@ git commit -am "feat: 存储层次 B 组 5 个对比实验"
 - `body()`：先一次性写入 M=500 条 1 KB 消息（共 500 KB，`SO_SNDBUF`/`SO_RCVBUF` 设 1 MB），然后重复 M 次：baseline 用 `poll()` 扫描全部 10,000 个 fd，optimized 用 `epoll_wait()` 等待就绪列表；每次检查后从活跃 fd 读 1 KB 并累加 payload 和。
 - 校验和：M 条消息的 payload 和；两变体相同。
 - 计时口径：500 KB 的写入是待测工作量（发送端），两变体相同；`init()` 只建连接、缓冲区和 epoll 注册，不预填消息。
-- `default_inner`：baseline 1，optimized 256；使单次重复落在 100–500 ms。
+- `default_inner_reps`：baseline 1，optimized 256；使单次重复落在 100–500 ms。
 - 预期：100x 量级（本机探针：10k fd 上 2000 次就绪检查，`poll` 1027 ms，`epoll` 0.75 ms；M=500 时约 250 ms 对 1 ms）。原计划的 10–50x 偏保守，以实测为准。
 - 实现要点：大 `write` 和 1 KB `read` 都要循环到足量；epoll 用水平触发；`poll` 的 `revents` 每轮由内核重写；不要把活跃连接改成 200 条同时就绪——那会让 `poll` 只扫描少数几次，测不到 O(N) 成本。
 - `semantics:` 只有 1 条连接持续有数据，其余空闲；每次就绪检查只处理一条消息，读写开销两变体相同；本实验只隔离就绪检查路径，比值不代表真实服务器端到端收益。
@@ -731,7 +731,7 @@ git commit -am "feat: 存储层次 B 组 5 个对比实验"
 - 任务：20 个 5 ms 长任务 + 200 个 0.5 ms 短任务；计算经 `bench::keep()` 防止消除；校验和为所有任务结果之和。
 - baseline：单线程顺序执行全部任务，约 200 ms。
 - optimized：短任务在主线程（`run_all.sh` 用 `--cpu 2`）执行，长任务交给一个 worker 线程；worker 在 `body()` 内创建，必须在 worker 启动时显式绑到物理核 4（否则继承主线程的 CPU 2，等于没有并行）；join 后约 100 ms。
-- `default_inner`：baseline 4，optimized 4；256 MB 单趟时单次重复约 31–51 ms，放大 inner 使单次重复落入 100–500 ms；两变体取相同 inner，保证原始 `sys_ns`（per-rep）可直接比较（per-body 比值不变，不是为制造收益调参）。
+- `default_inner_reps`：baseline 4，optimized 4；256 MB 单趟时单次重复约 31–51 ms，放大 inner_reps 使单次重复落入 100–500 ms；两变体取相同 inner_reps，保证原始 `sys_ns`（per-rep）可直接比较（per-body 比值不变，不是为制造收益调参）。
 - 预期：约 2x（一个 worker 的上限）。
 - `semantics:` 本实验把长任务移出事件循环以换取吞吐，不是尾延迟；长任务对同一循环内定时器的影响在 README 定性说明。若时间预算紧张，可先不做，但要在 README 中说明缺口。
 

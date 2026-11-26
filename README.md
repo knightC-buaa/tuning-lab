@@ -8,7 +8,7 @@
 
 已实现 4 个实验（覆盖需求文档中的 3 个叶子点：2.1.1、4.1.1、4.2.1），当前 CTest 16/16 通过：
 
-| 实验 | 对比内容 | 默认 inner（baseline / optimized） | 语义备注 |
+| 实验 | 对比内容 | 默认 inner_reps（baseline / optimized） | 语义备注 |
 |---|---|---|---|
 | `2.1.1_hash_vs_scan` | 哈希查表 vs 线性扫描 | 1 / 1 | 两种实现必须返回相同查询结果之和 |
 | `4.1.1a_async_overlap` | 逐个等待响应 vs 先发全部再统一收齐 | 2 / 128 | 服务端是同进程单线程事件循环，1 ms 为模拟处理延迟；只测等待重叠，不测线程/协程管理成本 |
@@ -69,7 +69,7 @@ build/exp/2_1_1_hash_vs_scan_baseline --verify
 | 参数 | 含义 |
 |---|---|
 | `--reps N` | 重复次数，1..100 |
-| `--inner N` | 每次 body 的内层重复次数；省略时用实验设定的默认值 |
+| `--inner-reps N` | 每次 body 的内层重复次数；省略时用实验设定的默认值 |
 | `--cpu N` | 绑定到指定逻辑 CPU；`-1` 表示不绑核 |
 | `--warmup N` | 预热次数 |
 | `--verify` | 只跑一次用于校验和比对，不输出计时 |
@@ -93,7 +93,7 @@ speedup = baseline median_ns / optimized median_ns
 | INVALID | 同一实验内 checksum 不一致 | 实现有 bug，必须修复后重跑 |
 
 - 几何平均只统计 SIGNIFICANT / INCONCLUSIVE / REGRESSION。
-- `median_ns` / `min_ns` / `p90_ns` 是 per-body 口径；`sys_ns` 是 per-rep 口径（累加后除以 reps，不除以 inner），不同 `inner` 之间不可直接比较。
+- `median_ns` / `min_ns` / `p90_ns` 是 per-body 口径；`sys_ns` 是 per-rep 口径（累加后除以 reps，不除以 inner_reps），不同 `inner_reps` 之间不可直接比较。
 - 加速比只对测量时的机器、编译器和参数有效；换机必须重测，不要与旧结果或其他机器比较。
 
 ## 不生成实验的 6 个点
@@ -119,10 +119,10 @@ speedup = baseline median_ns / optimized median_ns
 
 1. 新建 `exp/<id>/`，包含三个文件：
    - `setup.hpp`：`inline` 共享数据、`inline void init_base()`、`constexpr const char* kSemantics`；
-   - `baseline.cpp` / `optimized.cpp`：各自定义 `void init()` 与 `uint64_t body()`，末尾调用 `BENCH_MAIN("<id>", "<variant>", <default_inner>)`。
+   - `baseline.cpp` / `optimized.cpp`：各自定义 `void init()` 与 `uint64_t body()`，末尾调用 `BENCH_MAIN("<id>", "<variant>", <default_inner_reps>)`。
 2. 在 `exp/CMakeLists.txt` 增加一行 `add_experiment(<id>)`——这里是实验清单的唯一来源。
 3. 保证两个变体的 checksum 相同：`body()` 的返回值必须进入校验和，关键中间值用 `bench::keep()` 防止被编译器消除；不得在 `body()` 内做数据初始化。
-4. 选择 `default_inner`，使每轮 body 落在 100–500 ms；baseline/optimized 的编译选项差异用 `BASELINE_FLAGS` / `OPTIMIZED_FLAGS` 写明。
+4. 选择 `default_inner_reps`，使每轮 body 落在 100–500 ms；baseline/optimized 的编译选项差异用 `BASELINE_FLAGS` / `OPTIMIZED_FLAGS` 写明。
 
 `add_experiment` 会自动注册三个 CTest：两个 `--verify` 测试和一个由 `scripts/verify_exp.py` 完成的等价性测试。
 

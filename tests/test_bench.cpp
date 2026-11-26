@@ -94,7 +94,7 @@ void test_json() {
   r.exp = "2.1.1_hash_vs_scan";
   r.variant = "baseline";
   r.reps = 5;
-  r.inner = 1;
+  r.inner_reps = 1;
   r.median_ns = 123.0;
   r.min_ns = 100.0;
   r.p90_ns = 150.0;
@@ -119,7 +119,7 @@ void test_parse_args_valid() {
   char a0[] = "test_bench";
   char a1[] = "--reps";
   char a2[] = "3";
-  char a3[] = "--inner";
+  char a3[] = "--inner-reps";
   char a4[] = "2";
   char a5[] = "--cpu";
   char a6[] = "-1";
@@ -129,8 +129,8 @@ void test_parse_args_valid() {
   char* argv[] = {a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, nullptr};
   const bench::Config cfg = bench::parse_args(10, argv);
   CHECK(cfg.reps == 3);
-  CHECK(cfg.inner == 2);
-  CHECK(cfg.inner_set);
+  CHECK(cfg.inner_reps == 2);
+  CHECK(cfg.inner_reps_set);
   CHECK(cfg.cpu == -1);
   CHECK(cfg.warmup == 0);
   CHECK(cfg.verify);
