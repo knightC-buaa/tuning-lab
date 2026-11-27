@@ -2,7 +2,7 @@
 
 本仓库把《现代应用性能优化思路全景文档》中可在本机验证的优化点，实现为一对可独立运行的 C++ 程序：`baseline` 用普通写法，`optimized` 只改变该优化点对应的手段。两个变体只有优化手段不同，在 `--verify` 下必须输出相同校验和。
 
-文档入口：需求来源与方法论 [性能优化概述.md](性能优化概述.md)，实施计划与接口契约 [plan.md](plan.md)，协作规则 [CLAUDE.md](CLAUDE.md)。**本 README 是项目事实（当前状态、构建与运行、判定规则、运行环境）的权威来源。**
+文档入口：需求来源与方法论 [性能优化概述.md](性能优化概述.md)，实施计划与接口契约 [plan.md](plan.md)，协作规则 [CLAUDE.md](CLAUDE.md)，工具链与 AI 协作配置 [docs/harness-practice.md](docs/harness-practice.md)。**本 README 是项目事实（当前状态、构建与运行、判定规则、运行环境）的权威来源。**
 
 ## 当前状态
 

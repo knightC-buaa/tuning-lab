@@ -1,6 +1,7 @@
 #include "common/cpu.hpp"
 
 #include <cctype>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -34,7 +35,7 @@ std::vector<int> physical_cores() {
     for (const auto& entry :
          std::filesystem::directory_iterator(root, ec)) {
       const std::string name = entry.path().filename().string();
-      if (name.size() < 4 || name.rfind("cpu", 0) != 0) {
+      if (name.size() < 4 || !name.starts_with("cpu")) {
         continue;
       }
       bool numeric = true;
@@ -64,6 +65,7 @@ std::vector<int> physical_cores() {
 
   const long n = sysconf(_SC_NPROCESSORS_ONLN);
   std::vector<int> fallback;
+  fallback.reserve(n > 0 ? static_cast<std::size_t>(n) : 0);
   for (long i = 0; i < n; ++i) {
     fallback.push_back(static_cast<int>(i));
   }

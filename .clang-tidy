@@ -1,0 +1,34 @@
+---
+# 本项目的 clang-tidy 基线：只启用误报率低、与正确性/性能直接相关的检查。
+# 刻意写法的关闭理由见 docs/harness-practice.md 第 2 节。
+Checks: >
+  -*,
+  clang-analyzer-*,
+  bugprone-*,
+  performance-*,
+  cppcoreguidelines-avoid-goto,
+  cppcoreguidelines-slicing,
+  modernize-use-starts-ends-with,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-emplace,
+  modernize-make-unique,
+  modernize-make-shared,
+  modernize-loop-convert,
+  modernize-use-bool-literals,
+  readability-container-size-empty,
+  readability-redundant-string-cstr,
+  readability-simplify-boolean-expr,
+  readability-const-return-type,
+  misc-unused-parameters,
+  misc-throw-by-value-catch-by-reference,
+  misc-uniqueptr-reset-release,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -bugprone-narrowing-conversions
+
+# 先建立零告警基线，再由 CI/预设逐项收紧。
+WarningsAsErrors: ''
+
+HeaderFilterRegex: '.*/(common|exp|tests)/.*'
+FormatStyle: file

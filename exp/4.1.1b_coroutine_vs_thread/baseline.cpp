@@ -51,7 +51,7 @@ long process_thread_count() {
   std::string line;
   while (std::getline(in, line)) {
     constexpr const char kPrefix[] = "Threads:";
-    if (line.rfind(kPrefix, 0) == 0) {
+    if (line.starts_with(kPrefix)) {
       return std::strtol(line.c_str() + sizeof(kPrefix) - 1, nullptr, 10);
     }
   }

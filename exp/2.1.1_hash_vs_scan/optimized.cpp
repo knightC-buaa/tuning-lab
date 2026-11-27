@@ -24,7 +24,10 @@ void init() {
 uint64_t body() {
   uint64_t sum = 0;
   for (const uint32_t q : g_queries) {
-    sum += g_index.find(q)->second;
+    const auto it = g_index.find(q);
+    if (it != g_index.end()) {
+      sum += it->second;
+    }
   }
   bench::keep(sum);
   return sum;

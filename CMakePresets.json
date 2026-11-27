@@ -8,12 +8,60 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
+    },
+    {
+      "name": "strict",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build-strict",
+      "cacheVariables": {
+        "PERF_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "sanitize",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build-sanitize",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "PERF_SANITIZE": "ON"
+      }
     }
   ],
   "buildPresets": [
     {
       "name": "release",
       "configurePreset": "release"
+    },
+    {
+      "name": "strict",
+      "configurePreset": "strict"
+    },
+    {
+      "name": "sanitize",
+      "configurePreset": "sanitize"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "strict",
+      "configurePreset": "strict",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "sanitize",
+      "configurePreset": "sanitize",
+      "output": {
+        "outputOnFailure": true
+      }
     }
   ]
 }
