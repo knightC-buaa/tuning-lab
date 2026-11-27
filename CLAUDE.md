@@ -46,6 +46,6 @@ controller 派发实现或审查子代理时，必须把本节规则附在 dispa
 ### 工具优先
 
 - 重命名或改签名先用 clangd 符号查找（`.clangd` 指向 `build/`），不要全局文本替换。
-- 静态检查：`clang-tidy -p build <文件>`；配置以 [.clang-tidy](.clang-tidy) 为准。编辑后的钩子会自动检查改动的行，报告的问题要修，不要用 `NOLINT` 掩盖。
+- 静态检查：`clang-tidy -p build <文件>`；配置以 [.clang-tidy](.clang-tidy) 为准。编辑后的钩子会检查格式和改动行的 clang-tidy，报告的问题要修，不要用 `NOLINT` 掩盖。
 - 编译验证：`cmake --preset strict && cmake --build --preset strict -j"$(nproc)"` 必须零告警。
-- 格式化：当前 `.clang-format` 与存量代码尚未统一，**不要整文件运行 `clang-format -i`**；保持周围风格，迁移方案见 harness-practice 第 7 节。
+- 格式化：全仓库已统一为 [.clang-format](.clang-format)。编辑后对改动文件运行 `clang-format -i <文件>`，提交前用 `clang-format --dry-run --Werror <文件>` 确认。

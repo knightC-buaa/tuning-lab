@@ -20,6 +20,7 @@
 |---|---|---|
 | `CLAUDE.md` | 行为规则：硬不变量、C++ 写法、工具优先顺序 | 每次会话 |
 | `docs/harness-practice.md` | 本文件：配置地图、理由、基线、暂缓项 | 人工查阅 |
+| `.clang-format` | 代码格式的唯一来源 | 手动 / `PostToolUse` 钩子 |
 | `.clang-tidy` | 静态检查基线 | 手动 / `PostToolUse` 钩子 |
 | `CMakeLists.txt` | 编译器告警集、`-Werror` 开关、sanitizer 开关 | 构建时 |
 | `CMakePresets.json` | `release` / `strict` / `sanitize` 三套预设 | 构建 / 测试时 |
@@ -106,6 +107,14 @@ git diff -U0 | clang-tidy-diff-21.py -p1 -path build -config-file .clang-tidy
 
 测试统一用 `ctest --preset <name> -j"$(nproc)"`。
 
+### 格式化
+
+`.clang-format` 是格式的唯一来源（4 空格缩进、Allman 大括号、命名空间缩进）。全仓库源文件已通过 `clang-format --dry-run --Werror`。
+
+- 编辑后对改动文件运行 `clang-format -i <文件>`，再检查 `clang-format --dry-run --Werror <文件>`。
+- 编辑后钩子会对不合格的文件返回退出码 2，但不会自动修改文件。
+- 修改 `.clang-format` 必须一次性重排全仓库，并在同一提交中更新本文件的基线。
+
 ### sanitizer 边界
 
 - 仅用于正确性验证，**绝不能用于计时测量**：插桩会改变时间。
@@ -118,28 +127,18 @@ git diff -U0 | clang-tidy-diff-21.py -p1 -path build -config-file .clang-tidy
 
 行为：
 
-- 只看 `common/`、`exp/`、`tests/` 下、且已在 compile DB 中的源文件；其他文件直接放行。
-- 已跟踪的源文件：`git diff -U0` 交给 `clang-tidy-diff`，只检查本次改动的行。
-- 未跟踪的新源文件：已在 compile DB 中时整文件检查；尚未重新配置时跳过。
-- 头文件不在 compile DB 中，钩子跳过；其检查由包含它的源文件在下次编辑时覆盖。
+- 只看 `common/`、`exp/`、`tests/` 下的 C/C++ 文件；其他文件直接放行。
+- 格式化：对文件运行 `clang-format --dry-run --Werror`，只报告，不自动修改。
+- 静态检查：仅对已在 compile DB 中的源文件运行。
+  - 已跟踪的源文件：`git diff -U0` 交给 `clang-tidy-diff`，只检查本次改动的行。
+  - 未跟踪的新源文件：已在 compile DB 中时整文件检查；尚未重新配置时跳过。
+  - 头文件不在 compile DB 中，clang-tidy 跳过；其检查由包含它的源文件在下次编辑时覆盖。
 - 有诊断时写到 stderr 并返回退出码 2，Claude Code 会把内容反馈给模型；无诊断时返回 0。
-- 缺少 compile DB、`.clang-tidy`、clang-tidy 或 clang-tidy-diff 时静默放行，不阻塞编辑。
+- 缺少 compile DB、`.clang-tidy`、clang-tidy 或 clang-tidy-diff 时只跳过静态检查，不影响格式化检查。
 - 钩子超时 120 秒，clang-tidy 单文件超时 30 秒。
-- 依赖：`jq`、`clang-tidy`、`clang-tidy-diff-21.py`（或 `clang-tidy-diff.py`）。
-
-钩子不做格式化，原因见第 7 节。
+- 依赖：`jq`、`clang-format`、`clang-tidy`、`clang-tidy-diff-21.py`（或 `clang-tidy-diff.py`）。
 
 ## 7. 暂缓项与已知限制
-
-### 格式化门禁（暂缓）
-
-- `.clang-format` 当前未纳入版本控制，且与存量代码不一致：配置为 4 空格 + Allman 大括号 + 命名空间缩进，代码为 2 空格 + K&R。
-- 实测现有 20 个源文件全部无法通过 `clang-format --dry-run --Werror`。
-- 因此不注册格式化钩子，避免 Claude 每次编辑被迫整文件重排。
-- 收敛方式二选一，尚未决定：
-  1. 以代码为准，把 `.clang-format` 调整到现有风格并纳入版本控制；
-  2. 一次性全仓库重排，作为独立提交，再启用门禁。
-- 在此之前：不要运行整文件 `clang-format -i`，只手工保持周围风格。
 
 ### 其他
 
@@ -157,7 +156,8 @@ git diff -U0 | clang-tidy-diff-21.py -p1 -path build -config-file .clang-tidy
 | `strict` 构建（`-Werror`） | 0 告警，16/16 通过 |
 | `sanitize` 构建（ASan + UBSan） | 0 告警，16/16 通过 |
 | clang-tidy（`common/`、`exp/`、`tests/`） | 0 条用户代码诊断 |
-| 编辑后钩子 | 干净改动退出 0；注入空指针解引用后退出 2（均已验证） |
+| clang-format（全仓库源文件） | `--dry-run --Werror` 全部通过 |
+| 编辑后钩子 | 干净改动退出 0；注入空指针解引用或未格式化改动后退出 2（均已验证） |
 
 建立基线时顺带修正的存量问题：
 
@@ -173,6 +173,7 @@ git diff -U0 | clang-tidy-diff-21.py -p1 -path build -config-file .clang-tidy
 - 新增 clang-tidy 检查：先对全部源码跑一遍，确认零噪声，再把检查名加入 `.clang-tidy`。
 - 收紧告警：先保证 `release` 全量零告警，再考虑 `WarningsAsErrors: '*'`；可先在 `strict` 预设中验证。
 - 新增预设：在 `CMakePresets.json` 同时加 configure / build / test 三项。
+- 格式变更：改 `.clang-format` 后必须一次性重排全仓库，并同步更新本文件的基线。
 - 规则变更：行为规则改 `CLAUDE.md`，工具配置改对应文件，并同步本文件的映射表与基线。
 - 工具版本：当前环境 clang-format / clang-tidy / clangd 21.1.8、g++ 15.2、CMake 4.2.3。检查名与 `clang-tidy-diff-21.py` 的命名和版本绑定，换工具链时需重跑基线。
 

@@ -1,12 +1,17 @@
 #pragma once
 
-namespace bench {
+namespace bench
+{
 
 template <class T>
-inline void keep(const T& v) {
-  asm volatile("" : : "r,m"(v) : "memory");
+inline void keep(const T& v)
+{
+    asm volatile("" : : "r,m"(v) : "memory");
 }
 
-inline void clobber() { asm volatile("" ::: "memory"); }
+inline void clobber()
+{
+    asm volatile("" ::: "memory");
+}
 
-} // namespace bench
+}  // namespace bench
